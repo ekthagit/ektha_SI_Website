@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Business Solutions · EVAM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;500;600;700&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="mark" viewBox="0 0 690 470">
+    <path fill="currentColor" d="M178 4H562L608 85H226Z M255 133H638L685 213H302Z M330 267H684L636 346H375Z M530 392H618L571 466H484Z M136 33L316 346H232L137 193L106 241L195 392H457L416 466H150L4 240Z"/>
+  </symbol>
+</svg>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="EVAM Super Intelligence home">
+      <svg style="color:var(--fg)"><use href="#mark"/></svg>
+      <div><b>EVAM</b><span>SUPER INTELLIGENCE</span></div>
+    </a>
+    <nav class="links" aria-label="Pages">
+      <a href="index.html">Home</a>
+      <a href="trading.html">Trading</a>
+      <a href="business.html" aria-current="page">Business</a>
+      <a href="method.html">Method</a>
+      <a href="contact.html">Contact</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap page-hero biz">
+    <div class="eyebrow">Business Solutions</div>
+    <h1>End-to-end, from strategy to operation.</h1>
+    <p>For companies that need more than insight. We plan, build and run the business processes around the decision, and report back on the results.</p>
+  </div>
+  <div class="wrap biz" style="padding-bottom:clamp(56px,8vw,96px)">
+      <div class="caps">
+        <article class="cap">
+          <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="15"/><circle cx="20" cy="20" r="8"/><circle cx="20" cy="20" r="1.5"/></svg>
+          <h3>Strategy &amp; Advisory</h3>
+          <p>Market entry, brand acquisition and growth plans grounded in data, not guesswork.</p>
+          <ul><li>Market entry</li><li>Acquisitions</li><li>Growth planning</li></ul>
+        </article>
+        <article class="cap">
+          <svg viewBox="0 0 40 40"><rect x="4" y="4" width="12" height="12" rx="2"/><rect x="24" y="4" width="12" height="12" rx="2"/><rect x="14" y="24" width="12" height="12" rx="2"/><path d="M10 16V20H30V16M20 20V24"/></svg>
+          <h3>Operations &amp; Supply</h3>
+          <p>Sourcing, supply chain and trade operations set up and managed end to end.</p>
+          <ul><li>Sourcing</li><li>Supply chain</li><li>Trade operations</li></ul>
+        </article>
+        <article class="cap">
+          <svg viewBox="0 0 40 40"><path d="M8 4H26L32 10V36H8Z"/><path d="M26 4V10H32M14 18H26M14 24H26M14 30H21"/></svg>
+          <h3>Reporting &amp; Governance</h3>
+          <p>Board-level reporting, performance tracking and controls that keep every stakeholder informed.</p>
+          <ul><li>Board reporting</li><li>KPIs</li><li>Controls</li></ul>
+        </article>
+      </div>
+      <div class="planner">
+        <div>
+          <h3>Five-year growth planner</h3>
+          <p style="color:var(--muted);margin:8px 0 0">Move the sliders to see how growth and margin shape a business plan.</p>
+          <div class="note">Illustrative model, not a forecast</div>
+          <div class="field"><label for="pRev">Starting revenue <output id="oRev"></output></label><input type="range" id="pRev" min="5" max="200" step="5" value="40"></div>
+          <div class="field"><label for="pGr">Annual growth <output id="oGr"></output></label><input type="range" id="pGr" min="0" max="50" step="1" value="18"></div>
+          <div class="field"><label for="pMg">EBITDA margin, year 1 <output id="oMg"></output></label><input type="range" id="pMg" min="0" max="40" step="1" value="12"></div>
+          <div class="field"><label for="pMx">Margin gain per year <output id="oMx"></output></label><input type="range" id="pMx" min="0" max="5" step="0.5" value="1.5"></div>
+        </div>
+        <div>
+          <div class="kpis">
+            <div>Year 5 revenue<strong id="kRev"></strong></div>
+            <div>Year 5 EBITDA<strong id="kEb"></strong></div>
+            <div>5-yr EBITDA total<strong id="kCum"></strong></div>
+          </div>
+          <svg id="plan" viewBox="0 0 560 260" role="img" aria-label="Revenue and EBITDA bars by year"></svg>
+          <div id="planTip">Hover or tap a year for detail.</div>
+        </div>
+      </div>
+
+  </div>
+  <section><div class="wrap nextpage"><p>See how a business engagement runs, stage by stage.</p><a class="btn primary" href="method.html">Our method →</a></div></section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 EVAM Global Trading FZCO. All rights reserved.</span>
+    <span>Forecasts and signals are not investment advice.</span>
+  </div>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>

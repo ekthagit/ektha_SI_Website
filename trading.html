@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Trading Solutions · EVAM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;500;600;700&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="mark" viewBox="0 0 690 470">
+    <path fill="currentColor" d="M178 4H562L608 85H226Z M255 133H638L685 213H302Z M330 267H684L636 346H375Z M530 392H618L571 466H484Z M136 33L316 346H232L137 193L106 241L195 392H457L416 466H150L4 240Z"/>
+  </symbol>
+</svg>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="EVAM Super Intelligence home">
+      <svg style="color:var(--fg)"><use href="#mark"/></svg>
+      <div><b>EVAM</b><span>SUPER INTELLIGENCE</span></div>
+    </a>
+    <nav class="links" aria-label="Pages">
+      <a href="index.html">Home</a>
+      <a href="trading.html" aria-current="page">Trading</a>
+      <a href="business.html">Business</a>
+      <a href="method.html">Method</a>
+      <a href="contact.html">Contact</a>
+    </nav>
+  </div>
+</header>
+<div class="tape" id="tvTape" aria-label="Live market prices"></div>
+
+<main>
+  <div class="wrap page-hero">
+    <div class="eyebrow">Trading Solutions</div>
+    <h1>Next-generation trading intelligence.</h1>
+    <p>Prediction, analysis and signals built as one system, so every trade traces back to the same data and the same models.</p>
+  </div>
+  <div class="wrap" style="padding-bottom:clamp(40px,6vw,72px)">
+    <div class="tv-live">
+      <div class="bar">
+        <span class="live">Live market</span>
+        <div class="seg" role="group" aria-label="Live chart symbol" id="tvSeg">
+          <button type="button" data-v="TVC:UKOIL" aria-pressed="true">Brent</button>
+          <button type="button" data-v="OANDA:XAUUSD" aria-pressed="false">Gold</button>
+          <button type="button" data-v="FX:EURUSD" aria-pressed="false">EUR/USD</button>
+          <button type="button" data-v="FOREXCOM:SPXUSD" aria-pressed="false">S&amp;P 500</button>
+        </div>
+      </div>
+      <div id="tvChart"></div>
+      <div class="tv-credit">Market data and charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a>. Prices may be delayed depending on the exchange.</div>
+    </div>
+  </div>
+  <section>
+  <div class="wrap">
+    <div class="sec-head"><div><div class="eyebrow">EVAM forecast view</div><h2>How our forecasts are presented.</h2></div><p>Every call comes with a horizon, a confidence band and a signal. The example below uses simulated data.</p></div>
+    <figure class="panel big" style="margin:0" aria-label="Interactive illustrative forecast chart">
+      <div class="panel-top">
+        <span class="sym" id="sym">BRENT CRUDE · 30D FORECAST</span>
+        <span class="tag">Illustrative · Index = 100</span>
+      </div>
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Asset" id="assetSeg">
+          <button type="button" data-v="brent" aria-pressed="true">Brent</button>
+          <button type="button" data-v="gold" aria-pressed="false">Gold</button>
+          <button type="button" data-v="eurusd" aria-pressed="false">EUR/USD</button>
+          <button type="button" data-v="equity" aria-pressed="false">Equities</button>
+        </div>
+        <div class="seg" role="group" aria-label="Horizon" id="hzSeg">
+          <button type="button" data-v="7" aria-pressed="false">7D</button>
+          <button type="button" data-v="30" aria-pressed="true">30D</button>
+          <button type="button" data-v="90" aria-pressed="false">90D</button>
+        </div>
+        <div class="seg" role="group" aria-label="Confidence band" id="ciSeg">
+          <button type="button" data-v="80" aria-pressed="true">80%</button>
+          <button type="button" data-v="95" aria-pressed="false">95%</button>
+        </div>
+      </div>
+      <div class="chartbox">
+        <canvas id="fc" aria-hidden="true"></canvas>
+        <div class="tip" id="tip" hidden></div>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--fg)"></i>Observed</span>
+        <span><i style="background:var(--accent)"></i>Forecast</span>
+        <span><i style="background:var(--accent);opacity:.3;height:8px"></i>Confidence band</span>
+        <span>Hover or drag on the chart</span>
+      </div>
+      <div class="readouts">
+        <div>Signal<strong id="sig" class="up">Accumulate</strong></div>
+        <div>Expected move<strong id="mv">+0.0%</strong></div>
+        <div>Band at horizon<strong id="bw">±0.0</strong></div>
+      </div>
+    </figure>
+    <p class="datanote"><b>Simulated data.</b> This example shows the format of an EVAM forecast. It is not a live call.</p>
+  </div>
+  </section>
+  <section>
+    <div class="wrap">
+      <div class="sec-head"><div><div class="eyebrow">Capabilities</div><h2>Three disciplines, one system.</h2></div><p>Each capability feeds the next: forecasts inform analysis, and analysis produces signals with defined risk.</p></div>
+      <div class="caps">
+        <article class="cap">
+          <svg viewBox="0 0 40 40"><path d="M4 30 L14 20 L21 25 L36 8"/><path d="M28 8H36V16"/></svg>
+          <h3>Prediction</h3>
+          <p>Probabilistic price and risk forecasts with confidence ranges you can size positions around.</p>
+          <ul><li>Price forecasting</li><li>Volatility</li><li>Scenarios</li></ul>
+        </article>
+        <article class="cap">
+          <svg viewBox="0 0 40 40"><circle cx="17" cy="17" r="11"/><path d="M25 25L36 36"/><path d="M11 20V16M17 20V12M23 20V15"/></svg>
+          <h3>Analysis</h3>
+          <p>Market structure, flows and portfolio diagnostics turned into clear, decision-ready briefs.</p>
+          <ul><li>Market structure</li><li>Flow analysis</li><li>Portfolio review</li></ul>
+        </article>
+        <article class="cap">
+          <svg viewBox="0 0 40 40"><path d="M8 6V34M8 12H4V26H8M20 4V30M20 10H16V20H20M32 10V36M32 16H28V30H32"/></svg>
+          <h3>Trading Intelligence</h3>
+          <p>Signals across commodities, FX and equities, with entry, exit and risk limits defined up front.</p>
+          <ul><li>Signal generation</li><li>Risk controls</li><li>Execution timing</li></ul>
+        </article>
+      </div>
+    </div>
+  </section>
+  <section><div class="wrap nextpage"><p>Need more than signals? We also run the business around the decision.</p><a class="btn primary" href="business.html">Business Solutions →</a></div></section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 EVAM Global Trading FZCO. All rights reserved.</span>
+    <span>Forecasts and signals are not investment advice.</span>
+  </div>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>

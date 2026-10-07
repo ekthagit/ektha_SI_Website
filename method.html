@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Method · EVAM</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;500;600;700&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="mark" viewBox="0 0 690 470">
+    <path fill="currentColor" d="M178 4H562L608 85H226Z M255 133H638L685 213H302Z M330 267H684L636 346H375Z M530 392H618L571 466H484Z M136 33L316 346H232L137 193L106 241L195 392H457L416 466H150L4 240Z"/>
+  </symbol>
+</svg>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="EVAM Super Intelligence home">
+      <svg style="color:var(--fg)"><use href="#mark"/></svg>
+      <div><b>EVAM</b><span>SUPER INTELLIGENCE</span></div>
+    </a>
+    <nav class="links" aria-label="Pages">
+      <a href="index.html">Home</a>
+      <a href="trading.html">Trading</a>
+      <a href="business.html">Business</a>
+      <a href="method.html" aria-current="page">Method</a>
+      <a href="contact.html">Contact</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="wrap page-hero">
+    <div class="eyebrow">Method</div>
+    <h1>From raw data to executed decision.</h1>
+    <p>Trading and business engagements follow the same four stages. Select a stage to see what happens in each.</p>
+  </div>
+  <div class="wrap" style="padding-bottom:clamp(56px,8vw,96px)">
+      <div class="steps" role="tablist" aria-label="Method stages" id="steps">
+        <button role="tab" id="st0" aria-selected="true" aria-controls="stepbody"><span class="n">STAGE 1</span><span class="t">Ingest</span></button>
+        <button role="tab" id="st1" aria-selected="false" aria-controls="stepbody" tabindex="-1"><span class="n">STAGE 2</span><span class="t">Model</span></button>
+        <button role="tab" id="st2" aria-selected="false" aria-controls="stepbody" tabindex="-1"><span class="n">STAGE 3</span><span class="t">Decide</span></button>
+        <button role="tab" id="st3" aria-selected="false" aria-controls="stepbody" tabindex="-1"><span class="n">STAGE 4</span><span class="t">Execute</span></button>
+      </div>
+      <div class="stepbody" id="stepbody" role="tabpanel" aria-labelledby="st0">
+        <div><h4>What happens</h4><p class="lead" id="sbWhat"></p></div>
+        <div><h4>In trading</h4><p id="sbTrade"></p></div>
+        <div><h4>In business</h4><p id="sbBiz"></p></div>
+      </div>
+      <div class="progress"><i id="prog" style="width:25%"></i></div>
+
+  </div>
+  <section>
+    <div class="wrap">
+      <div class="sec-head"><div><div class="eyebrow">Sectors</div><h2>Built for markets that move fast.</h2></div><p>Our focus is where pricing, supply and timing decide the outcome.</p></div>
+      <div class="sectors">
+        <span>Commodities</span><span>Foreign exchange</span><span>Equities</span><span>Consumer brands &amp; FMCG</span><span>Luxury goods</span><span>Supply chain &amp; logistics</span><span>Mergers &amp; acquisitions</span>
+      </div>
+    </div>
+  </section>
+  <section><div class="wrap nextpage"><p>Ready to talk about a specific market or business?</p><a class="btn primary" href="contact.html">Contact us →</a></div></section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 EVAM Global Trading FZCO. All rights reserved.</span>
+    <span>Forecasts and signals are not investment advice.</span>
+  </div>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>
