@@ -2,21 +2,22 @@ html{-webkit-text-size-adjust:100%}
 :root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 img{max-width:100%}[hidden]{display:none!important}
 
-/* Layout: dark navy command surface; full-bleed hero with live forecast canvas, then a capability grid, a four-stage pipeline, and a quiet contact band. */
-:root{
-  --bg:#001A42; --bg-2:#04245A; --line:#1E3D73; --fg:#EEF4FC; --muted:#93A8C9;
-  --accent:#6FB7FF; --signal:#3FD6A6; --warn:#F2B35A;
-  --display:"Sora",ui-sans-serif,system-ui,sans-serif;
-  --body:"IBM Plex Sans",ui-sans-serif,system-ui,sans-serif;
-  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
-  color-scheme:dark;
+:root {
+  --bg: #F3F6FB;
+  --bg-2: #FFFFFF;
+  --line: #D3DCEA;
+  --fg: #001F4D;
+  --muted: #4F6286;
+  --accent: #0B5CC4;
+  --signal: #0E8F68;
+  --warn: #B26C0A;
+
+  --display: "Sora", ui-sans-serif, system-ui, sans-serif;
+  --body: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+
+  color-scheme: light;
 }
-@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
-  --bg:#F3F6FB; --bg-2:#FFFFFF; --line:#D3DCEA; --fg:#001F4D; --muted:#4F6286;
-  --accent:#0B5CC4; --signal:#0E8F68; --warn:#B26C0A; color-scheme:light}}
-:root[data-theme="light"]{
-  --bg:#F3F6FB; --bg-2:#FFFFFF; --line:#D3DCEA; --fg:#001F4D; --muted:#4F6286;
-  --accent:#0B5CC4; --signal:#0E8F68; --warn:#B26C0A; color-scheme:light}
 
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--fg);font:400 16px/1.6 var(--body);margin:0}
@@ -150,6 +151,35 @@ input[type=range]{width:100%;accent-color:var(--signal)}
 .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}
 .kpis div{font:400 11px/1.3 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .kpis strong{display:block;margin-top:4px;font:500 20px/1.2 var(--mono);letter-spacing:0;color:var(--fg);font-variant-numeric:tabular-nums}
+
+
+/* Mobile */
+@media (max-width:560px){
+  .kpis{
+    grid-template-columns:1fr;
+    gap:10px;
+  }
+
+  .kpis div{
+    display:flex;
+    align-items:baseline;
+    justify-content:space-between;
+    gap:16px;
+    padding-bottom:10px;
+    border-bottom:1px solid var(--line);
+  }
+
+  .kpis div:last-child{
+    border-bottom:0;
+  }
+
+  .kpis strong{
+    margin-top:0;
+    flex:none;
+    text-align:right;
+    font-size:18px;
+  }
+}
 #plan{width:100%;height:auto;display:block}
 #plan .bar{fill:var(--line)}
 #plan .bar.e{fill:var(--signal)}

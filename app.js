@@ -5,8 +5,8 @@
   const redrawers=[];
   const redrawAll=()=>redrawers.forEach(f=>f());
   addEventListener('resize',redrawAll);
-  matchMedia('(prefers-color-scheme: dark)').addEventListener('change',redrawAll);
-  new MutationObserver(redrawAll).observe(root,{attributes:true,attributeFilter:['data-theme']});
+  // matchMedia('(prefers-color-scheme: dark)').addEventListener('change',redrawAll);
+  // new MutationObserver(redrawAll).observe(root,{attributes:true,attributeFilter:['data-theme']});
 
   function seg(id,onChange){
     const el=document.getElementById(id);
@@ -203,7 +203,7 @@
 
   /* ---------- Live market data (TradingView widgets) ---------- */
   const TV='https://s3.tradingview.com/external-embedding/';
-  const dark=()=>{const t=root.getAttribute('data-theme');return t?t==='dark':matchMedia('(prefers-color-scheme: dark)').matches};
+  // const dark=()=>{const t=root.getAttribute('data-theme');return t?t==='dark':matchMedia('(prefers-color-scheme: dark)').matches};
   function mountTV(host,widget,config,fallbackMsg){
     if(!host) return;
     host.innerHTML='';
@@ -211,7 +211,15 @@
     const inner=document.createElement('div'); inner.className='tradingview-widget-container__widget'; inner.style.height='100%';
     box.appendChild(inner);
     const sc=document.createElement('script'); sc.src=TV+widget; sc.async=true;
-    sc.textContent=JSON.stringify(Object.assign({colorTheme:dark()?'dark':'light',isTransparent:true,locale:'en'},config));
+    // sc.textContent=JSON.stringify(Object.assign({colorTheme:dark()?'dark':'light',isTransparent:true,locale:'en'},config));
+
+    sc.textContent=JSON.stringify(Object.assign({
+      colorTheme:'light',
+      isTransparent:true,
+      locale:'en'
+    },config));
+
+
     sc.onerror=()=>{host.innerHTML='<div class="tv-fallback">'+fallbackMsg+'</div>'};
     box.appendChild(sc); host.appendChild(box);
   }
@@ -239,8 +247,8 @@
       sym=b.dataset.v; mountChart();
     });
   }
-  let lastDark=dark();
-  const retheme=()=>{const d=dark(); if(d===lastDark) return; lastDark=d; mountTape(); if(chart) mountChart()};
-  matchMedia('(prefers-color-scheme: dark)').addEventListener('change',retheme);
-  new MutationObserver(retheme).observe(root,{attributes:true,attributeFilter:['data-theme']});
+  // let lastDark=dark();
+  // const retheme=()=>{const d=dark(); if(d===lastDark) return; lastDark=d; mountTape(); if(chart) mountChart()};
+  // matchMedia('(prefers-color-scheme: dark)').addEventListener('change',retheme);
+  // new MutationObserver(retheme).observe(root,{attributes:true,attributeFilter:['data-theme']});
 })();
