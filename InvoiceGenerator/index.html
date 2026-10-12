@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>EVAM Documents</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Poppins:wght@300;400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&display=swap">
+    <link rel="stylesheet" href="css/app.css">
+    <link rel="stylesheet" href="css/doc.css">
+</head>
+<body>
+
+<header class="appbar">
+    <a class="brand" href="#create" aria-label="EVAM Documents, create a document">
+        <img src="logo.svg" alt="" class="brand-logo" onerror="this.style.display='none'">
+        <span class="brand-name">Document desk</span>
+    </a>
+    <nav class="mainnav" aria-label="Main">
+        <a href="#create" data-view="create">Create</a>
+        <a href="#documents" data-view="documents">Documents <span class="nav-count" id="navDocCount"></span></a>
+        <a href="#import" data-view="import">Import</a>
+        <a href="#contacts" data-view="contacts">Contacts</a>
+        <a href="#products" data-view="products">Products</a>
+        <a href="#settings" data-view="settings">Settings</a>
+    </nav>
+    <div class="appbar-right">
+        <button type="button" class="btn btn-ghost" id="fxBtn" title="Live currency rates from XE"></button>
+    </div>
+</header>
+
+<main id="app">
+
+    <!-- ========== CREATE ========== -->
+    <section class="view" id="view-create" aria-label="Create document">
+        <div class="docbar">
+            <div class="docbar-left">
+                <button type="button" class="type-picker" id="typePicker" aria-haspopup="menu" aria-expanded="false"></button>
+                <div class="docbar-id">
+                    <span class="docbar-number" id="barNumber"></span>
+                    <span class="save-state" id="saveState"></span>
+                </div>
+                <select id="statusSelect" class="status-select" aria-label="Status"></select>
+            </div>
+            <div class="docbar-right">
+                <div class="seg mobile-only" role="tablist" aria-label="Show">
+                    <button type="button" role="tab" data-pane="form" class="on">Edit</button>
+                    <button type="button" role="tab" data-pane="preview">Preview</button>
+                </div>
+                <button type="button" class="btn btn-ghost" id="newBtn"></button>
+                <button type="button" class="btn btn-ghost btn-icon" id="moreBtn" aria-haspopup="menu" aria-expanded="false" aria-label="More actions" title="Duplicate, convert or delete"></button>
+                <span class="docbar-sep" aria-hidden="true"></span>
+                <button type="button" class="btn btn-quiet" id="saveBtn"></button>
+                <button type="button" class="btn btn-primary" id="printBtn"></button>
+            </div>
+        </div>
+
+        <div class="workspace" data-pane="form">
+            <div class="form-pane" id="formPane"></div>
+            <div class="desk" id="desk">
+                <div class="desk-bar">
+                    <span class="desk-info" id="deskInfo">A4 preview</span>
+                    <div class="zoombar" role="group" aria-label="Preview zoom">
+                        <button type="button" id="zoomOut" aria-label="Zoom out"></button>
+                        <button type="button" id="zoomLabel" class="zoom-label" title="Fit to width">Fit</button>
+                        <button type="button" id="zoomIn" aria-label="Zoom in"></button>
+                    </div>
+                </div>
+                <div class="desk-scroll" id="deskScroll">
+                    <div class="sheet-holder" id="sheetHolder"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== DOCUMENTS ========== -->
+    <section class="view page-view" id="view-documents" hidden aria-label="Saved documents">
+        <div class="page-head">
+            <div>
+                <h1>Documents</h1>
+                <p class="page-sub">Everything you have saved in this browser.</p>
+            </div>
+            <div class="page-actions">
+                <button type="button" class="btn btn-ghost" id="exportCsvBtn"></button>
+                <button type="button" class="btn btn-ghost" id="docsImportBtn"></button>
+                <button type="button" class="btn btn-primary" id="docsNewBtn"></button>
+            </div>
+        </div>
+        <div class="ledger-strip" id="ledgerStrip"></div>
+        <div class="filters">
+            <label class="search"><span class="search-ic"></span><input id="docSearch" type="search" placeholder="Search number, customer or reference" aria-label="Search documents"></label>
+            <select id="docTypeFilter" aria-label="Type"></select>
+            <select id="docStatusFilter" aria-label="Status"></select>
+        </div>
+        <div class="table-card" id="docsTable"></div>
+    </section>
+
+    <!-- ========== IMPORT ========== -->
+    <section class="view page-view" id="view-import" hidden aria-label="Import documents">
+        <div class="page-head">
+            <div>
+                <h1>Import documents</h1>
+                <p class="page-sub">Moving from another system? Add your old invoices, quotations, purchase orders and letters. Each file is read and added to Documents straight away.</p>
+            </div>
+        </div>
+        <div class="import-grid">
+            <div>
+                <label class="dropzone" id="dropzone" tabindex="0">
+                    <input type="file" id="importFiles" accept="application/pdf,image/png,image/jpeg,image/webp,.pdf,.png,.jpg,.jpeg,.webp" multiple hidden>
+                    <span class="dz-art" id="dzArt"></span>
+                    <span class="dz-title">Drop files here or <u>choose files</u></span>
+                    <span class="dz-sub">PDF, JPG, PNG or WebP · many files at once</span>
+                </label>
+                <div class="import-queue" id="importQueue" hidden></div>
+            </div>
+            <aside class="panel import-side">
+                <h2>Reading options</h2>
+                <div class="field">
+                    <label for="importLang">Language on the documents</label>
+                    <select id="importLang">
+                        <option value="eng">English</option>
+                        <option value="eng+ara">English and Arabic</option>
+                    </select>
+                </div>
+                <label class="check"><input type="checkbox" id="importContacts" checked><span class="check-box"></span><span class="check-text">Add new customers and vendors to Contacts</span></label>
+                <label class="check"><input type="checkbox" id="importSkipDup" checked><span class="check-box"></span><span class="check-text">Skip documents already in Documents<small>Matched by type and number</small></span></label>
+                <h3 class="panel-h3">How it works</h3>
+                <ul class="import-notes">
+                    <li>PDFs with selectable text are read directly.</li>
+                    <li>Scans, photos and PDFs without usable text are read with text recognition, which can misread characters, so they are always marked for a quick check. The reader downloads once (about 10–20 MB).</li>
+                    <li>Files are read on this computer and are not uploaded anywhere.</li>
+                    <li>Anything that could not be read with certainty is listed on the document as a check, and the totals always match the original.</li>
+                    <li>Imported documents keep their original numbers and are marked <b>Imported</b> until you set their status.</li>
+                </ul>
+            </aside>
+        </div>
+    </section>
+
+    <!-- ========== CONTACTS ========== -->
+    <section class="view page-view" id="view-contacts" hidden aria-label="Contacts">
+        <div class="page-head">
+            <div>
+                <h1>Contacts</h1>
+                <p class="page-sub">Customers and vendors. Pick them by name on any document.</p>
+            </div>
+            <div class="page-actions">
+                <button type="button" class="btn btn-primary" id="newContactBtn"></button>
+            </div>
+        </div>
+        <div class="filters">
+            <label class="search"><span class="search-ic"></span><input id="contactSearch" type="search" placeholder="Search contacts" aria-label="Search contacts"></label>
+        </div>
+        <div class="table-card" id="contactsTable"></div>
+    </section>
+
+    <!-- ========== PRODUCTS ========== -->
+    <section class="view page-view" id="view-products" hidden aria-label="Products">
+        <div class="page-head">
+            <div>
+                <h1>Products &amp; services</h1>
+                <p class="page-sub">Saved items fill in description, unit, rate and VAT when you type their name on a line.</p>
+            </div>
+            <div class="page-actions">
+                <button type="button" class="btn btn-primary" id="newProductBtn"></button>
+            </div>
+        </div>
+        <div class="filters">
+            <label class="search"><span class="search-ic"></span><input id="productSearch" type="search" placeholder="Search products" aria-label="Search products"></label>
+        </div>
+        <div class="table-card" id="productsTable"></div>
+    </section>
+
+    <!-- ========== SETTINGS ========== -->
+    <section class="view page-view" id="view-settings" hidden aria-label="Settings">
+        <div class="page-head">
+            <div>
+                <h1>Settings</h1>
+                <p class="page-sub">Changes save automatically and apply to new documents.</p>
+            </div>
+        </div>
+        <div class="settings">
+            <nav class="settings-nav" id="settingsNav" aria-label="Settings sections"></nav>
+            <div class="settings-body" id="settingsBody"></div>
+        </div>
+    </section>
+</main>
+
+<!-- Type picker / menus -->
+<div class="menu" id="menu" role="menu" hidden></div>
+
+<!-- Dialogs -->
+<dialog class="dialog" id="dialog">
+    <form method="dialog" class="dialog-inner" id="dialogInner"></form>
+</dialog>
+
+<dialog class="dialog dialog-fx" id="fxDialog">
+    <div class="dialog-inner">
+        <div class="dialog-head">
+            <h2>Live currency rates</h2>
+            <button type="button" class="icon-btn" id="fxClose" aria-label="Close"></button>
+        </div>
+        <iframe id="xeFrame" title="XE currency converter" loading="lazy"></iframe>
+        <p class="hint">Rates from XE. Use the AED equivalent option on a document to print VAT in dirhams.</p>
+    </div>
+</dialog>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<!-- Rendered here only while printing -->
+<div id="printRoot" aria-hidden="true"></div>
+
+<datalist id="unitList"></datalist>
+<datalist id="contactList"></datalist>
+<datalist id="productList"></datalist>
+
+<script src="js/defaults.js"></script>
+<script src="js/util.js"></script>
+<script src="js/store.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/render.js"></script>
+<script src="js/importer.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

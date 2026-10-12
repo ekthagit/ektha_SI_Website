@@ -1,0 +1,277 @@
+/* ==========================================================
+   EVAM Documents — the printed A4 sheet
+   Used by both the live preview and print / PDF.
+   ========================================================== */
+
+.sheet {
+    --ink: #1c2633;
+    --muted: #5d6977;
+    --rule: #dbe1e8;
+    --tint: color-mix(in srgb, var(--accent) 6%, #ffffff);
+    --side: 14mm;
+    position: relative;
+    width: 210mm;
+    min-height: 297mm;
+    padding: 0 var(--side);
+    display: flex;
+    flex-direction: column;
+    background: #fff;
+    color: var(--ink);
+    font-family: var(--doc-font);
+    font-size: 9.3pt;
+    line-height: 1.45;
+    font-variant-numeric: tabular-nums;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    overflow: hidden;
+}
+.sheet * { box-sizing: border-box; }
+.sheet h1 { margin: 0; font-weight: inherit; }
+
+/* Frame: thead/tfoot spacers repeat on every printed page */
+.page-frame { width: 100%; border-collapse: collapse; flex: none; position: relative; z-index: 1; }
+.page-frame > thead > tr > td,
+.page-frame > tfoot > tr > td,
+.page-frame > tbody > tr > td { padding: 0; border: 0; }
+.frame-space-head { height: 14mm; }
+.layout-letterhead .frame-space-head { height: 6mm; }
+.frame-space-foot { height: 8mm; }
+
+/* ---------- Classic header ---------- */
+.doc-top-classic { display: flex; justify-content: space-between; align-items: flex-start; gap: 8mm; }
+.brand-block { min-width: 0; }
+.company-logo { display: block; height: 12mm; width: auto; max-width: 70mm; object-fit: contain; margin-bottom: 2.4mm; }
+.company-name { font-size: 11pt; font-weight: 700; letter-spacing: .02em; color: var(--ink); }
+.brand-rule { width: 74mm; height: 1.1mm; background: var(--accent); margin: 2mm 0 1.4mm; }
+.company-trn { font-size: 8pt; color: var(--muted); }
+.doc-top-classic .doc-title {
+    margin-right: calc(var(--side) * -1);
+    margin-top: 4mm;
+    padding: 2.6mm 14mm 2.6mm 9mm;
+    background: var(--accent);
+    color: #fff;
+    font-size: 19pt;
+    font-weight: 600;
+    letter-spacing: .06em;
+    line-height: 1.15;
+    white-space: nowrap;
+    border-radius: 20mm 0 0 20mm;
+}
+
+/* ---------- Minimal header ---------- */
+.doc-top-min { display: flex; justify-content: space-between; align-items: flex-start; gap: 10mm; padding-bottom: 5mm; border-bottom: .35mm solid var(--ink); }
+.doc-top-min .doc-title { font-size: 24pt; font-weight: 300; letter-spacing: .04em; color: var(--accent); line-height: 1.1; }
+.doc-number { margin-top: 1.5mm; font-size: 10pt; color: var(--muted); }
+.min-company { text-align: right; font-size: 8pt; color: var(--muted); line-height: 1.5; }
+.min-company .company-logo { height: 9mm; margin: 0 0 2mm auto; }
+.min-company .company-name { font-size: 9pt; }
+
+/* ---------- Letterhead ---------- */
+.lh-head { margin: 0 calc(var(--side) * -1); line-height: 0; position: relative; z-index: 2; }
+.lh-head img, .lh-foot img { width: 100%; height: auto; display: block; }
+.doc-top-lh { text-align: center; }
+.doc-top-lh .doc-title { display: inline-block; font-size: 15pt; font-weight: 600; letter-spacing: .14em; color: var(--accent); padding: 0 0 1.5mm; border-bottom: .5mm solid var(--accent); }
+.lh-foot { margin: auto calc(var(--side) * -1) 0; position: relative; z-index: 2; }
+.lh-foot .foot-note { padding: 0 var(--side) 2mm; }
+
+/* ---------- Parties & meta ---------- */
+.head-grid { display: grid; grid-template-columns: 1fr 70mm; gap: 8mm; margin: 7mm 0 6mm; align-items: start; }
+.parties { display: grid; grid-template-columns: repeat(auto-fit, minmax(44mm, 1fr)); gap: 6mm; }
+.block-label {
+    font-size: 7.8pt;
+    font-weight: 600;
+    letter-spacing: .03em;
+    color: var(--accent);
+    padding-bottom: 1mm;
+    margin-bottom: 1.8mm;
+    border-bottom: .3mm solid var(--accent);
+}
+.party { font-size: 8.8pt; line-height: 1.5; min-width: 0; overflow-wrap: anywhere; }
+.party-name { font-weight: 600; font-size: 9.6pt; margin-bottom: .5mm; }
+.party-name.placeholder { color: #b7c0ca; font-weight: 400; }
+.party-trn { margin-top: .8mm; font-weight: 500; }
+.meta { background: var(--tint); border-radius: 1.5mm; padding: 3mm 4mm; }
+.meta-row { display: flex; justify-content: space-between; gap: 4mm; padding: .7mm 0; font-size: 8.6pt; }
+.meta-k { color: var(--muted); white-space: nowrap; }
+.meta-v { font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+.layout-minimal .meta { background: none; padding: 0; border-left: .3mm solid var(--rule); padding-left: 4mm; border-radius: 0; }
+
+/* ---------- Items ---------- */
+.items { width: 100%; border-collapse: collapse; font-size: 8.8pt; }
+.items thead { display: table-header-group; }
+.items th {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+    font-size: 8pt;
+    text-align: left;
+    padding: 2.2mm 2mm;
+    white-space: nowrap;
+}
+.items td { padding: 2.2mm 2mm; border-bottom: .2mm solid var(--rule); vertical-align: top; }
+.items tr { break-inside: avoid; page-break-inside: avoid; }
+.items .c-num { text-align: right; white-space: nowrap; }
+.items .c-no { width: 7mm; color: var(--muted); text-align: center; }
+.items th.c-no { color: #fff; }
+.items .c-item { width: auto; overflow-wrap: anywhere; }
+.items .c-hs, .items .c-unit { white-space: nowrap; }
+.items .c-amt { font-weight: 600; }
+.items .c-check { width: 16mm; text-align: center; }
+.item-name { font-weight: 500; }
+.item-desc { color: var(--muted); font-size: 8.1pt; margin-top: .6mm; line-height: 1.45; }
+.disc-pct { color: var(--muted); font-size: 7.6pt; }
+.row-empty td { color: #b7c0ca; }
+.tick-box { display: inline-block; width: 3.6mm; height: 3.6mm; border: .3mm solid var(--muted); border-radius: .6mm; }
+.qty-total td { border-bottom: 0; font-weight: 600; border-top: .4mm solid var(--accent); }
+.layout-minimal .items th { background: none; color: var(--accent); border-bottom: .45mm solid var(--accent); padding-left: 1.5mm; padding-right: 1.5mm; }
+.layout-minimal .items td { padding-left: 1.5mm; padding-right: 1.5mm; }
+
+/* ---------- Money ---------- */
+.money { display: grid; grid-template-columns: 1fr 76mm; gap: 8mm; margin-top: 5mm; break-inside: avoid; page-break-inside: avoid; }
+.words-text { font-weight: 500; font-size: 8.8pt; }
+.bank { margin-top: 5mm; }
+.bank-line { display: grid; grid-template-columns: 27mm 1fr; gap: 2mm; font-size: 8.2pt; padding: .35mm 0; }
+.bank-k { color: var(--muted); }
+.bank-v { font-weight: 500; overflow-wrap: anywhere; }
+.totals { font-size: 9pt; }
+.t-row { display: flex; justify-content: space-between; align-items: baseline; gap: 4mm; padding: 1.05mm 0; }
+.t-val { white-space: nowrap; font-weight: 500; }
+.t-cur { font-size: 7.4pt; color: var(--muted); margin-right: 1.4mm; font-weight: 400; }
+.t-neg .t-val { color: #8a3b2f; }
+.t-sub { border-top: .2mm solid var(--rule); margin-top: .8mm; padding-top: 1.8mm; }
+.t-grand { border-top: .45mm solid var(--accent); margin-top: 1.2mm; padding-top: 2.2mm; font-size: 11.5pt; font-weight: 700; color: var(--accent); }
+.t-grand .t-val { font-weight: 700; }
+.t-grand .t-cur { color: var(--accent); font-size: 8pt; }
+.t-balance { background: var(--accent); color: #fff; padding: 2mm 3mm; margin-top: 1.5mm; border-radius: 1mm; font-weight: 700; }
+.t-balance .t-cur { color: rgba(255, 255, 255, .75); }
+.fx-box { margin-top: 3.5mm; border: .25mm dashed #c2ccd6; border-radius: 1mm; padding: 2mm 3mm; font-size: 8pt; }
+.fx-title { color: var(--muted); margin-bottom: 1mm; }
+.fx-box .t-row { padding: .5mm 0; }
+.t-strong { font-weight: 700; }
+
+/* ---------- Notes & terms ---------- */
+.notes, .terms { margin-top: 6mm; font-size: 8.5pt; break-inside: avoid; }
+.rich { line-height: 1.5; }
+.rich ol, .rich ul { margin: 0; padding-left: 5mm; }
+.rich li { margin-bottom: .8mm; }
+.rich p { margin: 0 0 2mm; }
+.rich p:last-child { margin-bottom: 0; }
+
+/* ---------- Signatures ---------- */
+.signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 14mm; margin-top: 9mm; break-inside: avoid; page-break-inside: avoid; }
+.sign { font-size: 8.8pt; }
+.sign-right { text-align: right; }
+.sign-for { font-weight: 600; margin-bottom: 1mm; }
+.sign-art { position: relative; height: 20mm; }
+.sign-img { position: absolute; bottom: 0; right: 0; max-height: 20mm; max-width: 50mm; }
+.sign-left .sign-img { right: auto; left: 0; }
+.stamp-img { position: absolute; bottom: -2mm; right: 30mm; height: 26mm; opacity: .9; transform: rotate(-8deg); }
+.sign-line { border-top: .3mm solid #8995a2; width: 58mm; margin: 1mm 0 1.6mm auto; }
+.sign-left .sign-line { margin-left: 0; }
+.sign-name { font-weight: 600; }
+.sign-title { color: var(--muted); }
+.sign-field { border-bottom: .25mm dotted #8995a2; height: 9mm; display: flex; align-items: flex-end; }
+.sign-field span { font-size: 7.6pt; color: var(--muted); padding-bottom: .6mm; }
+
+/* ---------- Footer ---------- */
+.doc-foot { margin-top: auto; position: relative; z-index: 2; }
+.foot-note { text-align: center; font-size: 7.8pt; color: var(--muted); padding-bottom: 2mm; }
+.foot-line { display: flex; flex-wrap: wrap; justify-content: center; column-gap: 5mm; row-gap: .4mm; }
+.foot-line span { white-space: nowrap; }
+.doc-foot-min .foot-name { font-weight: 600; color: var(--ink); font-size: 7.6pt; letter-spacing: .02em; }
+.doc-foot-classic .foot-bar {
+    margin: 0 calc(var(--side) * -1);
+    background: var(--accent);
+    color: #fff;
+    text-align: center;
+    padding: 2.6mm var(--side) 3mm;
+    font-size: 7.8pt;
+    line-height: 1.5;
+}
+.foot-name { font-weight: 700; letter-spacing: .04em; font-size: 8.4pt; }
+.doc-foot-min { border-top: .25mm solid var(--rule); padding: 2.4mm 0 5mm; text-align: center; font-size: 7.6pt; color: var(--muted); }
+.doc-foot-min .foot-note { padding-bottom: 1.4mm; }
+
+/* ---------- Letters ---------- */
+.letter { font-size: 10.2pt; line-height: 1.65; }
+.letter-meta { display: flex; justify-content: space-between; gap: 6mm; font-size: 9.4pt; margin-bottom: 7mm; }
+.letter-meta .meta-k { margin-right: 1.5mm; }
+.letter-to { margin-bottom: 6mm; font-size: 9.6pt; line-height: 1.55; }
+.letter-title { text-align: center; font-size: 13.5pt; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; margin: 2mm 0 6mm !important; }
+.letter-subject { font-weight: 600; margin-bottom: 5mm; }
+.letter-subject span { color: var(--muted); font-weight: 500; }
+.letter-body { overflow-wrap: anywhere; }
+.letter-body ol, .letter-body ul { padding-left: 7mm; }
+.watermark { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); pointer-events: none; z-index: 0; }
+.watermark img { width: 95mm; opacity: .05; }
+
+/* ---------- Paid / cancelled stamp ---------- */
+.money { position: relative; }
+.status-stamp {
+    position: absolute;
+    top: 0;
+    left: 46%;
+    z-index: 3;
+    padding: 1.5mm 5mm;
+    border: .9mm solid #2f7d5b;
+    border-radius: 2mm;
+    color: #2f7d5b;
+    font-family: var(--doc-font);
+    font-size: 20pt;
+    font-weight: 700;
+    letter-spacing: .14em;
+    transform: translateX(-50%) rotate(-12deg);
+    opacity: .78;
+    mix-blend-mode: multiply;
+    pointer-events: none;
+}
+.status-stamp.is-cancelled { color: #a33a2b; border-color: #a33a2b; }
+
+/* ==========================================================
+   PRINT
+   ========================================================== */
+@media print {
+    @page { size: A4; margin: 0; }
+    .sheet { background: #fff; min-height: 297mm; box-shadow: none !important; overflow: visible; }
+    .frame-space-head { height: var(--head-space) !important; }
+    .frame-space-foot { height: var(--foot-space) !important; }
+    .lh-head { position: fixed; top: 0; left: 0; width: 210mm; margin: 0; }
+    .lh-foot, .doc-foot { position: fixed; bottom: 0; left: 0; width: 210mm; margin: 0; padding-left: 14mm; padding-right: 14mm; }
+    .lh-foot { padding: 0; }
+    .doc-foot-classic .foot-bar { margin: 0 -14mm; }
+    .watermark { position: fixed; }
+}
+
+.stamp-slot { display: flex; justify-content: center; padding-top: 7mm; }
+.stamp-slot .status-stamp { position: static; transform: rotate(-8deg); }
+.sheet > .status-stamp { top: 70mm; left: auto; right: 26mm; transform: rotate(-12deg); }
+
+/* ---------- Board resolutions ---------- */
+.res { font-size: 10pt; line-height: 1.6; }
+.res p { margin: 0 0 3.2mm; }
+.res-title { margin: 0 0 2mm !important; }
+.res-company { text-align: center; font-size: 8.4pt; color: var(--muted); line-height: 1.5; margin-bottom: 7mm; }
+.res-company i { display: inline-block; width: .25mm; height: 2.6mm; background: currentColor; opacity: .45; margin: 0 2.2mm; vertical-align: -.3mm; }
+.res-co-name { font-weight: 700; color: var(--ink); font-size: 9.6pt; letter-spacing: .03em; }
+.res-attend { display: grid; gap: 1.6mm; margin: 0 0 3.2mm; padding: 3mm 4mm; background: var(--tint); border-radius: 1.5mm; font-size: 9.2pt; }
+.res-attend > div { display: grid; grid-template-columns: 22mm 1fr; gap: 3mm; }
+.res-k { color: var(--muted); }
+.muted-ink { color: var(--muted); }
+.res-h { font-weight: 700; color: var(--accent); font-size: 9.4pt; letter-spacing: .02em; margin: 5mm 0 2.4mm; padding-bottom: 1mm; border-bottom: .3mm solid var(--accent); break-after: avoid; }
+.res-p { text-align: justify; }
+.res-list { margin: 0 0 3.2mm; padding-left: 6mm; }
+.res-list li { margin-bottom: 2.6mm; text-align: justify; padding-left: 1mm; break-inside: avoid; }
+.res .blank { background: #FFF1B8; border-radius: .6mm; padding: 0 .6mm; }
+.res-signs { display: grid; grid-template-columns: 1fr 1fr; gap: 6mm 14mm; }
+.res-sign { break-inside: avoid; font-size: 9pt; }
+.res-sign-space { height: 16mm; }
+.res-sign .sign-line { margin-left: 0; width: 62mm; }
+.res-date { margin-top: 1.4mm; font-size: 8.4pt; color: var(--muted); }
+.res-certify { margin-top: 8mm; border: .3mm solid var(--accent); border-radius: 1.5mm; break-inside: avoid; display: grid; grid-template-columns: 34mm 1fr; overflow: hidden; }
+.res-cert-title { background: var(--accent); color: #fff; font-weight: 700; font-size: 9pt; letter-spacing: .04em; padding: 4mm; display: flex; align-items: center; text-transform: uppercase; line-height: 1.3; }
+.res-cert-body { padding: 3mm 5mm 4mm; font-size: 9pt; }
+.res-cert-body .sign-art { height: 18mm; }
+.res-cert-body .sign-img { left: 0; right: auto; max-height: 16mm; }
+.res-cert-body .stamp-img { left: 36mm; right: auto; }
+.res-cert-body .sign-line { margin-left: 0; width: 62mm; }
+@media print { .res .blank { background: #FFF1B8; } }
