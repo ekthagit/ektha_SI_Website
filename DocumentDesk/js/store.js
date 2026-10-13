@@ -60,7 +60,7 @@ const Store = {
         }
     },
 
-    get settings() { return this.data.settings; },
+    get settings() { return this.data ? this.data.settings : DEFAULT_SETTINGS; },
 
     /* ---------- Documents ---------- */
     getDoc(id) { return this.data.docs.find(d => d.id === id); },
@@ -173,6 +173,28 @@ function formatNumber(type, seq, dateIso) {
         .replace(/\{SEQ(\d)?\}/g, (_, p) => String(seq).padStart(Number(p || 1), "0"));
 }
 
+/* Where the signature and stamp sit and how big they are: offsets in mm from their
+   usual place under "For <company>", and a size factor (1 = normal) */
+const MARK_LIMITS = { x: 200, y: 280, sMin: 0.4, sMax: 3 };
+function normMark(m) {
+    m = m || {};
+    const c = (v, lo, hi, d) => { const n = Number(v); return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
+    return {
+        x: round(c(m.x, -MARK_LIMITS.x, MARK_LIMITS.x, 0), 1),
+        y: round(c(m.y, -MARK_LIMITS.y, MARK_LIMITS.y, 0), 1),
+        s: round(c(m.s, MARK_LIMITS.sMin, MARK_LIMITS.sMax, 1), 2),
+        r: Math.round(c(m.r, -180, 180, 0))
+    };
+}
+const MARK_MODES = ["both", "sig", "stamp", "none"];
+function normMarks(m) {
+    m = m || {};
+    return { mode: MARK_MODES.includes(m.mode) ? m.mode : "both", sig: normMark(m.sig), stamp: normMark(m.stamp) };
+}
+function marksAreDefault(m) {
+    return m.mode === "both" && ["sig", "stamp"].every(k => m[k].x === 0 && m[k].y === 0 && m[k].s === 1 && !m[k].r);
+}
+
 /* ---------- New documents ---------- */
 function newItem(over = {}) {
     const { id, ...rest } = over;
@@ -223,6 +245,7 @@ function upgradeDoc(doc) {
     doc.fx = { show: false, rate: "", ...(doc.fx || {}) };
     doc.columns = deepMerge(JSON.parse(JSON.stringify(DEFAULT_COLUMNS)), doc.columns || {});
     doc.signature = { show: false, name: "", title: "", ...(doc.signature || {}) };
+    doc.signature.marks = normMarks(doc.signature.marks || (Store.settings && Store.settings.brand && Store.settings.brand.marks));
     doc.letter = { to: "", subject: "", body: "", showLeft: false, leftName: "", leftTitle: "", leftLabel: "", showRight: true, rightLabel: "", ...(doc.letter || {}) };
     const co = (Store.data && Store.settings.company) || DEFAULT_COMPANY;
     doc.res = {

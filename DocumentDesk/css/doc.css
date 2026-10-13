@@ -162,10 +162,15 @@
 .sign { font-size: 8.8pt; }
 .sign-right { text-align: right; }
 .sign-for { font-weight: 600; margin-bottom: 1mm; }
-.sign-art { position: relative; height: 20mm; }
-.sign-img { position: absolute; bottom: 0; right: 0; max-height: 20mm; max-width: 50mm; }
-.sign-left .sign-img { right: auto; left: 0; }
-.stamp-img { position: absolute; bottom: -2mm; right: 30mm; height: 26mm; opacity: .9; transform: rotate(-8deg); }
+/* Signature and stamp: each is positioned on its own inside a fixed-height area, so
+   resizing or moving one never moves the other. Default: stamp to the left of the signature. */
+.sign-art { position: relative; height: 23mm; margin: 1mm 0; }
+.sign-img, .stamp-img { position: absolute; bottom: 0; z-index: 4; display: block; object-fit: contain; }
+.sign-img { right: 0; max-height: calc(20mm * var(--ms, 1)); max-width: calc(46mm * var(--ms, 1)); }
+.stamp-img { right: 0; height: calc(23mm * var(--ms, 1)); width: auto; max-width: calc(30mm * var(--ms, 1)); opacity: .92; }
+.sign-art.has-sig .stamp-img { right: 50mm; }
+.sign-left .sign-art .sign-img, .sign-left .sign-art .stamp-img { right: auto; left: 0; }
+.sign-left .sign-art.has-sig .stamp-img { left: 50mm; }
 .sign-line { border-top: .3mm solid #8995a2; width: 58mm; margin: 1mm 0 1.6mm auto; }
 .sign-left .sign-line { margin-left: 0; }
 .sign-name { font-weight: 600; }
@@ -270,8 +275,10 @@
 .res-certify { margin-top: 8mm; border: .3mm solid var(--accent); border-radius: 1.5mm; break-inside: avoid; display: grid; grid-template-columns: 34mm 1fr; overflow: hidden; }
 .res-cert-title { background: var(--accent); color: #fff; font-weight: 700; font-size: 9pt; letter-spacing: .04em; padding: 4mm; display: flex; align-items: center; text-transform: uppercase; line-height: 1.3; }
 .res-cert-body { padding: 3mm 5mm 4mm; font-size: 9pt; }
-.res-cert-body .sign-art { height: 18mm; }
-.res-cert-body .sign-img { left: 0; right: auto; max-height: 16mm; }
-.res-cert-body .stamp-img { left: 36mm; right: auto; }
+.res-cert-body .sign-art { height: 20mm; }
+.res-cert-body .sign-img, .res-cert-body .stamp-img { right: auto; left: 0; }
+.res-cert-body .sign-img { max-height: calc(17mm * var(--ms, 1)); }
+.res-cert-body .stamp-img { height: calc(20mm * var(--ms, 1)); }
+.res-cert-body .sign-art.has-sig .stamp-img { right: auto; left: 50mm; }
 .res-cert-body .sign-line { margin-left: 0; width: 62mm; }
 @media print { .res .blank { background: #FFF1B8; } }

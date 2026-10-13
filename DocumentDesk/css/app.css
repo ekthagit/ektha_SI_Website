@@ -207,6 +207,7 @@ body[data-view="create"] { overflow: hidden; }
 .req { color: var(--bad); margin-left: 2px; }
 .opt { margin-left: 6px; font-weight: 400; color: var(--mute); font-size: 11.5px; }
 .hint { font-size: 12px; color: var(--steel); margin-top: 5px; line-height: 1.4; }
+.hint.warn-text { color: var(--warn); }
 /* Vertical rhythm: blocks stacked in a section, sub-block or dialog are 14px apart.
    Items inside a grid never get stacking margins, so rows always line up. */
 .fsec-body > * + *, .sub-block > * + *, .dialog-body > * + *, .panel .grid-2 + *, .panel .field + .field, .panel .field + .grid-2, .panel .check + .grid-2 { margin-top: 14px; }
@@ -641,3 +642,35 @@ button.addon-toggle:hover, button.addon-btn:hover { background: var(--navy-soft)
     .iq-right { grid-column: 1 / -1; }
     .iq-result { flex-wrap: wrap; }
 }
+
+/* ---------- Signature & stamp placement ---------- */
+.marks-box { border: 1px solid var(--line-2); border-radius: 9px; padding: 10px 12px; background: #FAFBFC; display: grid; gap: 8px; }
+.marks-head { display: grid; gap: 2px; }
+.marks-head .hint { margin: 0; }
+.mark-item { display: grid; gap: 4px; padding-top: 6px; border-top: 1px solid var(--line-2); }
+.mark-item[hidden] { display: none; }
+.mark-row { display: grid; grid-template-columns: 44px 1fr 46px; align-items: center; gap: 10px; color: var(--steel); font-size: 13px; }
+.mark-name { justify-self: start; background: none; border: 0; padding: 0; font: inherit; font-weight: 600; color: var(--navy); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.marks-mode { display: flex; flex-wrap: wrap; }
+.marks-mode button:disabled { opacity: .45; cursor: not-allowed; }
+.mark-rot-stem { position: absolute; left: 50%; top: -22px; width: 1.5px; height: 22px; background: var(--navy); transform: translateX(-50%); }
+.mark-rot { position: absolute; left: 50%; top: -30px; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; background: #fff; border: 1.5px solid var(--navy); cursor: grab; }
+.mark-rot:active { cursor: grabbing; }
+@media (pointer: coarse) { .mark-rot { width: 22px; height: 22px; margin-left: -11px; top: -36px; } }
+.mark-row input[type=range] { width: 100%; accent-color: var(--navy); padding: 0; border: 0; box-shadow: none; height: 22px; }
+.mark-row output { font-variant-numeric: tabular-nums; text-align: right; color: var(--steel); }
+.marks-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.desk-scroll { position: relative; }
+#sheetHolder [data-mark] { cursor: move; touch-action: none; user-select: none; -webkit-user-drag: none; }
+#sheetHolder [data-mark]:hover { outline: 1px dashed rgba(20, 57, 94, .55); outline-offset: 2px; }
+.mark-box { position: absolute; z-index: 20; border: 1.5px solid var(--navy); border-radius: 2px; cursor: move; touch-action: none; box-shadow: 0 0 0 9999px rgba(0,0,0,0); }
+.mark-box[hidden] { display: none; }
+.mark-label { position: absolute; left: -1.5px; top: 100%; margin-top: 6px; white-space: nowrap; background: var(--navy); color: #fff; font-size: 11px; padding: 2px 7px; border-radius: 4px; pointer-events: none; }
+.mark-h { position: absolute; width: 11px; height: 11px; background: #fff; border: 1.5px solid var(--navy); border-radius: 2px; }
+.mark-nw { left: -6px; top: -6px; cursor: nwse-resize; }
+.mark-ne { right: -6px; top: -6px; cursor: nesw-resize; }
+.mark-sw { left: -6px; bottom: -6px; cursor: nesw-resize; }
+.mark-se { right: -6px; bottom: -6px; cursor: nwse-resize; }
+body.mark-dragging, body.mark-dragging * { user-select: none !important; }
+@media (pointer: coarse) { .mark-h { width: 18px; height: 18px; } .mark-nw, .mark-sw { left: -10px; } .mark-ne, .mark-se { right: -10px; } .mark-nw, .mark-ne { top: -10px; } .mark-sw, .mark-se { bottom: -10px; } }
+@media print { .mark-box { display: none !important; } }

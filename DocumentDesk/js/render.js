@@ -260,6 +260,36 @@ function renderBank(doc, s) {
     return `<div class="bank"><div class="block-label">Payment details</div>${lines}</div>`;
 }
 
+/* Move, then turn around its own centre */
+function markTransform(m) {
+    const parts = [];
+    if (m.x || m.y) parts.push(`translate(${m.x}mm,${m.y}mm)`);
+    if (m.r) parts.push(`rotate(${m.r}deg)`);
+    return parts.join(" ");
+}
+
+/* Position and size of the signature or stamp, as set by dragging on the preview */
+function markAttrs(doc, kind) {
+    const m = (doc.signature && doc.signature.marks && doc.signature.marks[kind]) || { x: 0, y: 0, s: 1, r: 0 };
+    const tf = markTransform(m);
+    return ` data-mark="${kind}" style="--ms:${m.s};${tf ? `transform:${tf};` : ""}"`;
+}
+
+/* Signature and stamp area. Each image is placed on its own, so resizing or moving
+   one never shifts the other. mode: both | sig | stamp | none */
+/* Stamp only: the stamp stands alone, without a signature line, name or designation */
+function stampOnly(doc, a, on = true) {
+    return on && !!a.stamp && ((doc.signature.marks && doc.signature.marks.mode) || "both") === "stamp";
+}
+
+function signArt(doc, a, on = true) {
+    const mode = (doc.signature.marks && doc.signature.marks.mode) || "both";
+    const showSig = on && (mode === "both" || mode === "sig");
+    const showStamp = on && !!a.stamp && (mode === "both" || mode === "stamp");
+    const cls = ["sign-art", showSig ? "has-sig" : "", showStamp ? "has-stamp" : ""].filter(Boolean).join(" ");
+    return `<div class="${cls}">${showSig ? `<img class="sign-img" src="${esc(a.signature)}" alt=""${markAttrs(doc, "sig")} onerror="this.remove()">` : ""}${showStamp ? `<img class="stamp-img" src="${esc(a.stamp)}" alt=""${markAttrs(doc, "stamp")}>` : ""}</div>`;
+}
+
 function renderSignature(doc, s, a) {
     const t = DOC_TYPES[doc.type];
     const sig = doc.signature;
@@ -273,13 +303,10 @@ function renderSignature(doc, s, a) {
     const right = sig.show ? `
 <div class="sign sign-right">
   <div class="sign-for">For ${esc(s.company.name)}</div>
-  <div class="sign-art">
-    <img class="sign-img" src="${esc(a.signature)}" alt="" onerror="this.remove()">
-    ${a.stamp ? `<img class="stamp-img" src="${esc(a.stamp)}" alt="">` : ""}
-  </div>
-  <div class="sign-line"></div>
+  ${signArt(doc, a)}
+  ${stampOnly(doc, a) ? "" : `<div class="sign-line"></div>
   ${sig.name ? `<div class="sign-name">${esc(sig.name)}</div>` : ""}
-  ${sig.title ? `<div class="sign-title">${esc(sig.title)}</div>` : `<div class="sign-title">Authorised signatory</div>`}
+  ${sig.title ? `<div class="sign-title">${esc(sig.title)}</div>` : `<div class="sign-title">Authorised signatory</div>`}`}
 </div>` : "";
     if (!right && !(t.receiver && doc.receiver)) return "";
     return `<div class="signatures">${left}${right}</div>`;
@@ -334,13 +361,10 @@ function renderLetterBody(doc, s, a) {
     const right = L.showRight !== false ? `
 <div class="sign sign-right">
   ${L.rightLabel ? `<div class="sign-for">${esc(L.rightLabel)}</div>` : ""}
-  <div class="sign-art">
-    ${sig.show ? `<img class="sign-img" src="${esc(a.signature)}" alt="" onerror="this.remove()">` : ""}
-    ${sig.show && a.stamp ? `<img class="stamp-img" src="${esc(a.stamp)}" alt="">` : ""}
-  </div>
-  <div class="sign-line"></div>
+  ${signArt(doc, a, sig.show)}
+  ${stampOnly(doc, a, sig.show) ? "" : `<div class="sign-line"></div>
   ${sig.name ? `<div class="sign-name">${esc(sig.name)}</div>` : ""}
-  ${sig.title ? `<div class="sign-title">${esc(sig.title)}</div>` : ""}
+  ${sig.title ? `<div class="sign-title">${esc(sig.title)}</div>` : ""}`}
 </div>` : "";
     return `
 <div class="letter">
@@ -403,13 +427,10 @@ ${r.quorum ? `<p>The Chair confirmed that a quorum was present and declared the 
   <div class="res-cert-title">Certified true copy</div>
   <div class="res-cert-body">
     <div>For and on behalf of <b>${esc(c.name)}</b></div>
-    <div class="sign-art">
-      ${sig.show ? `<img class="sign-img" src="${esc(a.signature)}" alt="" onerror="this.remove()">` : ""}
-      ${sig.show && a.stamp ? `<img class="stamp-img" src="${esc(a.stamp)}" alt="">` : ""}
-    </div>
-    <div class="sign-line"></div>
+    ${signArt(doc, a, sig.show)}
+    ${stampOnly(doc, a, sig.show) ? "" : `<div class="sign-line"></div>
     ${sig.name ? `<div class="sign-name">${esc(sig.name)}</div>` : ""}
-    <div class="sign-title">${esc(sig.title || "Director")}</div>
+    <div class="sign-title">${esc(sig.title || "Director")}</div>`}
     <div class="res-date">Date: ${esc(fmtDateLong(doc.date))}</div>
   </div>
 </div>` : "";

@@ -5,7 +5,7 @@
    and saved in the browser.
    ========================================================== */
 
-const APP_VERSION = "2.3";
+const APP_VERSION = "2.7.1";
 
 /* ---------- Currencies (words + decimals) ---------- */
 const CURRENCIES = {

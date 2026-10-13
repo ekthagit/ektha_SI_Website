@@ -131,6 +131,7 @@ function showMenu(anchor, items, align = "left") {
    ========================================================== */
 function init() {
     Store.load();
+    initMarks();
 
     // Static button labels with icons
     const setBtn = (id, ic, label) => { const b = $("#" + id); if (b) b.innerHTML = `${icon(ic)}<span>${label}</span>`; };
@@ -187,6 +188,7 @@ function route() {
     const view = ["create", "documents", "import", "contacts", "products", "settings"].includes(v) ? v : "create";
     App.view = view;
     document.body.dataset.view = view;
+    if (view !== "create" && $("#markBox")) $("#markBox").hidden = true;
     $$(".view").forEach(s => { s.hidden = s.id !== "view-" + view; });
     $$(".mainnav a").forEach(a => {
         const on = a.dataset.view === view;
@@ -403,6 +405,7 @@ async function startNew(type, goToCreate = false) {
 }
 
 function loadDoc(doc, dirty = false) {
+    MarkUI.sel = null;
     App.doc = upgradeDoc(doc);
     App.dirty = dirty;
     refreshAutoNumber();
@@ -561,9 +564,10 @@ function buildForm() {
   ${checkHTML({ bind: "letter.showRight", label: "Our signatory", hint: "Right side of the page" })}
   <div class="grid-2" data-if="letter.showRight">
     ${fieldHTML({ label: "Line above signature", bind: "letter.rightLabel", placeholder: `For ${Store.settings.company.name}`, optional: true, cls: "span-2" })}
-    ${fieldHTML({ label: "Name", bind: "signature.name" })}
-    ${fieldHTML({ label: "Designation", bind: "signature.title" })}
-    ${checkHTML({ bind: "signature.show", label: "Add signature image", cls: "span-2" })}
+    ${fieldHTML({ label: "Name", bind: "signature.name", if: "signature.marks.mode!=stamp", })}
+    ${fieldHTML({ label: "Designation", bind: "signature.title", if: "signature.marks.mode!=stamp", })}
+    ${checkHTML({ bind: "signature.show", label: "Add signature and stamp", cls: "span-2" })}
+    <div class="span-2" data-if="signature.show">${marksControlsHTML()}</div>
   </div>
 </div>
 <div class="sub-block">
@@ -665,7 +669,8 @@ ${fieldHTML({ label: "Notes", bind: "notes", type: "textarea", rows: 2, optional
   </div>
   <div id="rteTerms"></div>
 </div>
-${fieldHTML({ label: "Footer note", bind: "footer", optional: true, placeholder: "Small line printed above the footer" })}`, { closed: false });
+${fieldHTML({ label: "Footer note", bind: "footer", optional: true, placeholder: "Small line printed above the footer" })}
+<div class="hint warn-text" id="footerSignHint" hidden>This document is signed or stamped, but the footer note says no signature is required. <button type="button" class="link-btn" data-act="dropNoSigLine">Remove that sentence</button></div>`, { closed: false });
 
         // --- Signature & look
         html += sectionHTML("look", "Signature & layout", `
@@ -678,8 +683,9 @@ ${fieldHTML({ label: "Footer note", bind: "footer", optional: true, placeholder:
 </div>
 ${checkHTML({ bind: "signature.show", label: "Sign this document", hint: "Adds the authorised signatory, signature image and stamp" })}
 <div class="grid-2" data-if="signature.show">
-  ${fieldHTML({ label: "Signatory name", bind: "signature.name" })}
-  ${fieldHTML({ label: "Designation", bind: "signature.title" })}
+  ${fieldHTML({ label: "Signatory name", bind: "signature.name", if: "signature.marks.mode!=stamp", })}
+  ${fieldHTML({ label: "Designation", bind: "signature.title", if: "signature.marks.mode!=stamp", })}
+  <div class="span-2">${marksControlsHTML()}</div>
 </div>
 ${t.receiver ? checkHTML({ bind: "receiver", label: "Add ‘received by’ box for the customer" }) : ""}`, { closed: true });
     }
@@ -713,6 +719,7 @@ ${t.receiver ? checkHTML({ bind: "receiver", label: "Add ‘received by’ box f
         if (t.prices) renderCharges();
     }
     applyConditions();
+    refreshFooterHint();
     refreshDerived();
 }
 
@@ -766,9 +773,10 @@ ${checkHTML({ bind: "res.quorum", label: "Record that a quorum was present", if:
 ${checkHTML({ bind: "res.close", label: "Close with “There being no other business…”", if: "res.kind!=written" })}
 ${checkHTML({ bind: "res.certify", label: "Add a certified true copy block", hint: "For banks and authorities that ask for a certified copy" })}
 <div class="grid-2" data-if="res.certify">
-  ${fieldHTML({ label: "Certified by", bind: "signature.name" })}
-  ${fieldHTML({ label: "Designation", bind: "signature.title" })}
+  ${fieldHTML({ label: "Certified by", bind: "signature.name", if: "signature.marks.mode!=stamp", })}
+  ${fieldHTML({ label: "Designation", bind: "signature.title", if: "signature.marks.mode!=stamp", })}
   ${checkHTML({ bind: "signature.show", label: "Add signature image and stamp", cls: "span-2" })}
+  <div class="span-2" data-if="signature.show">${marksControlsHTML()}</div>
 </div>`) +
     `<datalist id="directorList">${(doc.res.directors || []).map(d => `<option value="${esc(d.name)}">`).join("")}</datalist>`;
 }
@@ -1140,6 +1148,8 @@ function renderCharges() {
 function onFormInput(e) {
     const el = e.target;
     const doc = App.doc;
+    if (el.dataset.markSize) { setMarkSize(el.dataset.markSize, Number(el.value) / 100); return; }
+    if (el.dataset.markRot) { setMarkAngle(el.dataset.markRot, Number(el.value)); return; }
     if (el.dataset.bind) {
         const path = el.dataset.bind;
         let v = el.type === "checkbox" ? el.checked : el.value;
@@ -1220,9 +1230,18 @@ function fillParty(prefix, c) {
 }
 
 async function onFormClick(e) {
-    const b = e.target.closest("[data-act], [data-layout], [data-reskind], .chip[data-days]");
+    const b = e.target.closest("[data-act], [data-layout], [data-reskind], .chip[data-days], [data-mark-mode]");
     if (!b) return;
     const doc = App.doc;
+    if (b.dataset.markMode) { setMarkMode(b.dataset.markMode); return; }
+    if (b.dataset.act === "marksReset") { resetMarks(); return; }
+    if (b.dataset.act === "dropNoSigLine") {
+        doc.footer = String(doc.footer || "").replace(NO_SIG_RE, "").replace(/\s{2,}/g, " ").trim();
+        const f = $(`[data-bind="footer"]`); if (f) f.value = doc.footer;
+        changed(); return;
+    }
+    if (b.dataset.act === "marksDefault") { saveMarksAsDefault(); return; }
+    if (b.dataset.act === "marksSelect") { selectMark(b.dataset.kind, true); return; }
     if (b.dataset.days) {
         const target = b.closest("[data-chips]").dataset.chips;
         doc[target] = addDays(doc.date, b.dataset.days);
@@ -1381,7 +1400,18 @@ function onCurrencyChange() {
 const renderPreviewSoon = debounce(() => requestAnimationFrame(() => renderPreview()), 90);
 const saveDraftSoon = debounce(() => Store.saveDraft(App.doc), 400);
 
+/* A signed document should not also say that no signature is required */
+const NO_SIG_RE = /[^.]*\bno signature is required\b[^.]*\.?/i;
+function refreshFooterHint() {
+    const h = $("#footerSignHint");
+    if (!h) return;
+    const d = App.doc, m = (d.signature.marks && d.signature.marks.mode) || "both";
+    const signed = d.signature.show && m !== "none";
+    h.hidden = !(signed && NO_SIG_RE.test(String(d.footer || "")));
+}
+
 function changed() {
+    refreshFooterHint();
     App.dirty = true;
     App.doc.updatedAt = Date.now();
     refreshDerived();
@@ -1473,6 +1503,7 @@ function renderPreview(force = false) {
         morphChildren(holder, tpl.content);
     }
     updateDeskInfo();
+    if (MarkUI.sel && !MarkUI.drag) requestAnimationFrame(placeMarkBox);
 }
 
 function morphChildren(from, to) {
@@ -1759,8 +1790,9 @@ function renderDocsTable() {
 <div class="empty">
   <div class="empty-art">${icon("note", 34)}</div>
   <h2>No saved documents yet</h2>
-  <p>Create an invoice, quotation or letter and press Save. It will be listed here with its status and balance. Moving from another system? Import your old documents.</p>
-  <div class="empty-actions"><a class="btn btn-ghost" href="#import">${icon("upload")}<span>Import old documents</span></a><a class="btn btn-primary" href="#create">${icon("plus")}<span>Create a document</span></a></div>
+  <p>Create an invoice, quotation or letter and press Save. It will be listed here with its status and balance.</p>
+  <p class="muted">Used EVAM Documents on another computer, browser or from a downloaded folder? Documents are kept in each browser separately: there, use <b>Settings → Backup → Export backup</b>, then here <b>Import a backup</b>. Moving from another system? Import your old PDFs.</p>
+  <div class="empty-actions"><a class="btn btn-ghost" href="#settings" onclick="App.settingsTab='backup'">${icon("upload")}<span>Import a backup</span></a><a class="btn btn-ghost" href="#import">${icon("upload")}<span>Import old documents</span></a><a class="btn btn-primary" href="#create">${icon("plus")}<span>Create a document</span></a></div>
 </div>`;
         return;
     }
@@ -2071,8 +2103,10 @@ function renderSettings() {
   ${img(s.brand.letterhead === "compact" ? "footer1" : "footer", "Letterhead footer", s.brand.letterhead === "compact" ? "images/footer1.png" : "images/footer.png", "Original artwork")}
   ${img("signature", "Signature", "images/signature.png", "Original signature")}
   ${img("stamp", "Company stamp", "", "Optional. A transparent PNG works best.")}
-</div></div>`;
+</div>
+<p class="panel-sub">To move or resize the signature and stamp, drag them on the document preview, or use the sizes under the signatory in each document. ${s.brand.marks && !marksAreDefault(normMarks(s.brand.marks)) ? `New documents use the position you saved. <button type="button" class="link-btn" id="marksDefaultReset">Use the usual place again</button>` : ""}</p></div>`;
             bindInputs(body, s);
+            $("#marksDefaultReset", body)?.addEventListener("click", () => { delete s.brand.marks; Store.save(); renderSettings(); toast("New documents will use the usual position and size.", "good"); });
             $$("[data-color]", body).forEach(b => b.addEventListener("click", () => { s.brand.color = b.dataset.color; Store.save(); renderSettings(); renderPreview(true); }));
             $$("[data-layoutdef]", body).forEach(b => b.addEventListener("click", () => { s.brand.layout = b.dataset.layoutdef; Store.save(); renderSettings(); renderPreview(true); }));
             $$("[data-asset]", body).forEach(inp => inp.addEventListener("change", async () => {
@@ -2216,3 +2250,293 @@ ${f("Footer note", `defaults.footers.${tt}`)}
 }
 
 document.addEventListener("DOMContentLoaded", init);
+
+
+/* ==========================================================
+   SIGNATURE & STAMP PLACEMENT
+   Drag the signature or stamp anywhere on the preview, resize it with the
+   corner handles or the sliders. Positions are kept per document in mm.
+   ========================================================== */
+const MarkUI = { sel: null, drag: null };
+
+function marksControlsHTML() {
+    const hasStamp = !!Store.settings.brand.stamp;
+    const m = App.doc.signature.marks;
+    const mode = m.mode || "both";
+    const show = kind => mode === "both" || mode === kind;
+    const modes = [["both", "Signature + stamp"], ["sig", "Signature only"], ["stamp", "Stamp only"], ["none", "Neither"]];
+    const slider = (kind, label) => `
+<div class="mark-item" data-mark-for="${kind}"${show(kind) ? "" : " hidden"}>
+  <button type="button" class="mark-name" data-act="marksSelect" data-kind="${kind}" title="Select it on the page">${label}</button>
+  <div class="mark-row"><span>Size</span>
+    <input type="range" min="${MARK_LIMITS.sMin * 100}" max="${MARK_LIMITS.sMax * 100}" step="5" value="${Math.round(m[kind].s * 100)}" data-mark-size="${kind}" aria-label="${label} size">
+    <output data-mark-out="${kind}">${Math.round(m[kind].s * 100)}%</output></div>
+  <div class="mark-row"><span>Angle</span>
+    <input type="range" min="-180" max="180" step="1" value="${m[kind].r || 0}" data-mark-rot="${kind}" aria-label="${label} angle">
+    <output data-mark-rout="${kind}">${m[kind].r || 0}°</output></div>
+</div>`;
+    return `
+<div class="marks-box">
+  <div class="marks-head"><b>Signature &amp; stamp</b><span class="hint">Drag each one on the preview to place it anywhere, pull a corner to resize, or the round handle to turn it. They move separately.</span></div>
+  <div class="seg seg-wrap marks-mode" role="group" aria-label="What to put on the document">${modes.map(([v, l]) => {
+        const off = !hasStamp && (v === "both" || v === "stamp");
+        return `<button type="button" data-mark-mode="${v}" class="${v === mode ? "on" : ""}" aria-pressed="${v === mode}"${off ? ` disabled title="Add a company stamp in Settings → Branding first"` : ""}>${l}</button>`;
+    }).join("")}</div>
+  ${slider("sig", "Signature")}
+  ${hasStamp ? slider("stamp", "Stamp") : `<div class="hint">No company stamp yet. Add one in Settings → Branding.</div>`}
+  <div class="marks-actions">
+    <button type="button" class="btn btn-ghost btn-sm" data-act="marksReset">${icon("refresh", 14)}<span>Reset position, size &amp; angle</span></button>
+    <button type="button" class="btn btn-ghost btn-sm" data-act="marksDefault">${icon("check", 14)}<span>Use for new documents</span></button>
+  </div>
+</div>`;
+}
+
+function syncMarkControls() {
+    const m = App.doc.signature && App.doc.signature.marks;
+    if (!m) return;
+    $$("[data-mark-size]").forEach(el => { el.value = Math.round(m[el.dataset.markSize].s * 100); });
+    $$("[data-mark-out]").forEach(el => { el.textContent = Math.round(m[el.dataset.markOut].s * 100) + "%"; });
+    $$("[data-mark-rot]").forEach(el => { el.value = m[el.dataset.markRot].r || 0; });
+    $$("[data-mark-rout]").forEach(el => { el.textContent = (m[el.dataset.markRout].r || 0) + "°"; });
+}
+
+function markEl(kind) { return $(`#sheetHolder [data-mark="${kind}"]`); }
+
+/* Apply a mark straight to the preview element while dragging, without a full re-render */
+function paintMark(kind) {
+    const el = markEl(kind);
+    if (!el) return;
+    const m = App.doc.signature.marks[kind];
+    el.style.setProperty("--ms", m.s);
+    el.style.transform = markTransform(m);
+}
+
+/* Change the size of one item. The other item never moves. `fixed` says which point of
+   this item stays put: its centre (sliders, keys) or the corner opposite the dragged handle. */
+function resizeMark(kind, s, fixed = { h: "center", v: "center" }, start = null) {
+    const el = markEl(kind);
+    const m = App.doc.signature.marks[kind];
+    const base = start || { m: { ...m }, r: el ? markGeom(el) : null };
+    const s1 = normMark({ s }).s;
+    if (base.m.r) fixed = { h: "center", v: "center" };   // turned: grow around the centre
+    if (base.r && base.m.s) {
+        const k = mmPerPx();
+        const dw = base.r.width * k * (s1 / base.m.s - 1), dh = base.r.height * k * (s1 / base.m.s - 1);
+        // Images are anchored at their bottom edge and at the right (or left) edge, so growth goes up and inward
+        const leftAnchored = !!(el && el.closest(".sign-left, .res-cert-body"));
+        const hx = fixed.h === "center" ? (leftAnchored ? -dw / 2 : dw / 2) : (fixed.h === "left" ? (leftAnchored ? 0 : dw) : (leftAnchored ? -dw : 0));
+        const vy = fixed.v === "center" ? dh / 2 : (fixed.v === "top" ? dh : 0);
+        m.x = normMark({ x: base.m.x + hx }).x;
+        m.y = normMark({ y: base.m.y + vy }).y;
+    }
+    m.s = s1;
+}
+
+function setMarkMode(mode) {
+    App.doc.signature.marks.mode = mode;
+    if (MarkUI.sel && !["both", MarkUI.sel].includes(mode)) MarkUI.sel = null;
+    $$("[data-mark-mode]").forEach(b => { const on = b.dataset.markMode === mode; b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); });
+    $$("[data-mark-for]").forEach(r => { r.hidden = !(mode === "both" || mode === r.dataset.markFor); });
+    applyConditions();
+    changed();
+    renderPreview(true);
+    placeMarkBox();
+}
+
+function setMarkAngle(kind, deg) {
+    App.doc.signature.marks[kind].r = normMark({ r: deg }).r;
+    paintMark(kind);
+    syncMarkControls();
+    placeMarkBox();
+    changed();
+}
+
+function setMarkSize(kind, s) {
+    resizeMark(kind, s);
+    paintMark(kind);
+    syncMarkControls();
+    placeMarkBox();
+    changed();
+}
+
+function resetMarks() {
+    App.doc.signature.marks = normMarks({ mode: App.doc.signature.marks.mode });
+    ["sig", "stamp"].forEach(paintMark);
+    syncMarkControls();
+    changed();
+    requestAnimationFrame(placeMarkBox);
+    toast("Signature and stamp are back in their usual place.");
+}
+
+function saveMarksAsDefault() {
+    Store.settings.brand.marks = JSON.parse(JSON.stringify(App.doc.signature.marks));
+    Store.save();
+    toast(marksAreDefault(App.doc.signature.marks) ? "New documents will use the usual position and size." : "New documents will use this position and size.", "good");
+}
+
+function selectMark(kind, scroll = false) {
+    const el = markEl(kind);
+    if (!el) { MarkUI.sel = null; placeMarkBox(); if (scroll) toast("Turn on the signature for this document first.", "warn"); return; }
+    MarkUI.sel = kind;
+    if (scroll) el.scrollIntoView({ block: "center", behavior: "smooth" });
+    placeMarkBox();
+    setTimeout(placeMarkBox, 350);
+}
+
+/* The selection box lives outside the sheet so it never prints */
+function markBox() {
+    let box = $("#markBox");
+    if (!box) {
+        box = document.createElement("div");
+        box.id = "markBox";
+        box.className = "mark-box";
+        box.hidden = true;
+        box.innerHTML = `<span class="mark-label"></span><span class="mark-rot-stem"></span><span class="mark-rot" data-rotate="1" title="Drag to turn (Shift: 15° steps)"></span>${["nw", "ne", "sw", "se"].map(c => `<span class="mark-h mark-${c}" data-corner="${c}"></span>`).join("")}`;
+        $("#deskScroll").appendChild(box);
+        box.addEventListener("pointerdown", e => e.target.dataset.rotate ? startMarkRotate(e, MarkUI.sel) : startMarkDrag(e, MarkUI.sel, e.target.dataset.corner || null));
+        box.addEventListener("dblclick", e => { if (e.target.dataset.rotate && MarkUI.sel) setMarkAngle(MarkUI.sel, 0); });
+    }
+    return box;
+}
+
+/* Size and centre of an item before turning, in screen pixels */
+function markGeom(el) {
+    const sheet = $("#sheetHolder .sheet");
+    const z = sheet ? sheet.getBoundingClientRect().width / sheet.offsetWidth : 1;
+    const r = el.getBoundingClientRect();
+    const w = el.offsetWidth * z, h = el.offsetHeight * z;
+    return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, width: w, height: h };
+}
+
+function placeMarkBox() {
+    const box = markBox();
+    const el = MarkUI.sel && markEl(MarkUI.sel);
+    if (!el || App.view !== "create") { box.hidden = true; return; }
+    const sc = $("#deskScroll"), g = markGeom(el), sr = sc.getBoundingClientRect();
+    const m = App.doc.signature.marks[MarkUI.sel];
+    box.hidden = false;
+    Object.assign(box.style, {
+        left: (g.cx - g.width / 2 - sr.left + sc.scrollLeft) + "px", top: (g.cy - g.height / 2 - sr.top + sc.scrollTop) + "px",
+        width: g.width + "px", height: g.height + "px", transform: m.r ? `rotate(${m.r}deg)` : ""
+    });
+    $(".mark-label", box).style.transform = m.r ? `rotate(${-m.r}deg)` : "";
+    $(".mark-label", box).textContent = `${MarkUI.sel === "sig" ? "Signature" : "Stamp"} · ${Math.round(m.s * 100)}%${m.r ? ` · ${m.r}°` : ""}`;
+}
+
+function mmPerPx() {
+    const sheet = $("#sheetHolder .sheet");
+    return sheet ? 210 / sheet.getBoundingClientRect().width : 0.26;
+}
+
+function startMarkDrag(e, kind, corner) {
+    if (!kind || e.button > 0) return;
+    const el = markEl(kind);
+    if (!el) return;
+    e.preventDefault();
+    const m = App.doc.signature.marks[kind];
+    const r = el.getBoundingClientRect();
+    const sheet = $("#sheetHolder .sheet").getBoundingClientRect();
+    MarkUI.drag = { kind, corner, x0: e.clientX, y0: e.clientY, m0: { ...m }, r, g: markGeom(el), sheet, k: mmPerPx(), moved: false };
+    document.body.classList.add("mark-dragging");
+    window.addEventListener("pointermove", onMarkMove);
+    window.addEventListener("pointerup", endMarkDrag, { once: true });
+    window.addEventListener("pointercancel", endMarkDrag, { once: true });
+}
+
+function startMarkRotate(e, kind) {
+    const el = kind && markEl(kind);
+    if (!el || e.button > 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const g = markGeom(el);
+    const ang = (x, y) => Math.atan2(y - g.cy, x - g.cx) * 180 / Math.PI;
+    const m = App.doc.signature.marks[kind];
+    const a0 = ang(e.clientX, e.clientY), r0 = m.r || 0;
+    let moved = false;
+    document.body.classList.add("mark-dragging");
+    const move = ev => {
+        let r = r0 + ang(ev.clientX, ev.clientY) - a0;
+        r = ((r + 540) % 360) - 180;
+        if (ev.shiftKey) r = Math.round(r / 15) * 15;
+        else if (Math.abs(r) < 2) r = 0;   // snap back to straight
+        m.r = normMark({ r }).r;
+        moved = true;
+        paintMark(kind); syncMarkControls(); placeMarkBox();
+    };
+    const end = () => {
+        window.removeEventListener("pointermove", move);
+        document.body.classList.remove("mark-dragging");
+        if (moved) changed();
+        placeMarkBox();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end, { once: true });
+    window.addEventListener("pointercancel", end, { once: true });
+}
+
+function onMarkMove(e) {
+    const d = MarkUI.drag;
+    if (!d) return;
+    const dx = e.clientX - d.x0, dy = e.clientY - d.y0;
+    if (Math.abs(dx) + Math.abs(dy) > 2) d.moved = true;
+    const m = App.doc.signature.marks[d.kind];
+    if (d.corner) {
+        // Resize from the corner, keeping proportions; the far corner stays put visually
+        // Work in the item's own (turned) axes
+        const a = (d.m0.r || 0) * Math.PI / 180;
+        const ux = dx * Math.cos(a) + dy * Math.sin(a), uy = -dx * Math.sin(a) + dy * Math.cos(a);
+        const sx = d.corner.includes("e") ? 1 : -1, sy = d.corner.includes("s") ? 1 : -1;
+        const f = d.m0.r ? 2 : 1; // turned items grow from the centre, so each side moves half as far
+        const grow = Math.max((d.g.width + f * sx * ux) / d.g.width, (d.g.height + f * sy * uy) / d.g.height);
+        const fixed = { h: d.corner.includes("e") ? "left" : "right", v: d.corner.includes("s") ? "top" : "bottom" };
+        resizeMark(d.kind, d.m0.s * grow, fixed, { m: d.m0, r: d.g });
+    } else {
+        // Keep the image on the page
+        const lo = x => Math.max(d.sheet.left - d.r.left, Math.min(d.sheet.right - d.r.right, x));
+        const loY = y => Math.max(d.sheet.top - d.r.top, Math.min(d.sheet.bottom - d.r.bottom, y));
+        m.x = normMark({ x: d.m0.x + lo(dx) * d.k }).x;
+        m.y = normMark({ y: d.m0.y + loY(dy) * d.k }).y;
+    }
+    paintMark(d.kind);
+    syncMarkControls();
+    placeMarkBox();
+}
+
+function endMarkDrag() {
+    const d = MarkUI.drag;
+    MarkUI.drag = null;
+    document.body.classList.remove("mark-dragging");
+    window.removeEventListener("pointermove", onMarkMove);
+    if (d && d.moved) changed();
+    placeMarkBox();
+}
+
+function initMarks() {
+    const holder = $("#sheetHolder");
+    holder.addEventListener("pointerdown", e => {
+        const el = e.target.closest("[data-mark]");
+        if (!el) { if (MarkUI.sel && !e.target.closest("#markBox")) { MarkUI.sel = null; placeMarkBox(); } return; }
+        MarkUI.sel = el.dataset.mark;
+        // Open the form section with the size sliders so they are at hand
+        $$(".marks-box").forEach(b => { const sec = b.closest("details"); if (sec && !sec.open) sec.open = true; });
+        placeMarkBox();
+        startMarkDrag(e, MarkUI.sel, null);
+    });
+    holder.addEventListener("dragstart", e => { if (e.target.closest("[data-mark]")) e.preventDefault(); });
+    $("#deskScroll").addEventListener("scroll", () => { if (MarkUI.sel) placeMarkBox(); }, { passive: true });
+    window.addEventListener("resize", () => { if (MarkUI.sel) placeMarkBox(); });
+    document.addEventListener("keydown", e => {
+        if (!MarkUI.sel || App.view !== "create" || e.target.closest("input, textarea, select, [contenteditable]")) return;
+        const m = App.doc.signature.marks[MarkUI.sel];
+        const step = e.shiftKey ? 5 : 1;
+        const moves = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+        if (moves[e.key]) { m.x = normMark({ x: m.x + moves[e.key][0] }).x; m.y = normMark({ y: m.y + moves[e.key][1] }).y; }
+        else if (e.key === "+" || e.key === "=") resizeMark(MarkUI.sel, m.s + 0.05);
+        else if (e.key === "-" || e.key === "_") resizeMark(MarkUI.sel, m.s - 0.05);
+        else if (e.key === "[" || e.key === "]" || e.key === "{" || e.key === "}") m.r = normMark({ r: (m.r || 0) + ((e.key === "]" || e.key === "}") ? 1 : -1) * (e.shiftKey ? 15 : 1) }).r;
+        else if (e.key === "Escape") { MarkUI.sel = null; placeMarkBox(); return; }
+        else return;
+        e.preventDefault();
+        paintMark(MarkUI.sel); syncMarkControls(); placeMarkBox(); changed();
+    });
+}
