@@ -3,31 +3,61 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <title>EVAM Documents</title>
+    <title>EVAM Books</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Poppins:wght@300;400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&display=swap">
-    <link rel="stylesheet" href="css/app.css?v=2.7.1">
-    <link rel="stylesheet" href="css/doc.css?v=2.7.1">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Poppins:wght@300;400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&display=swap">
+    <script>/* Theme before first paint: light unless the user chose dark */try{var t=localStorage.getItem("evambooks.theme");document.documentElement.dataset.theme=t==="dark"?"dark":"light";}catch(e){document.documentElement.dataset.theme="light";}</script>
+    <link rel="stylesheet" href="css/app.css?v=3.2.0">
+    <link rel="stylesheet" href="css/doc.css?v=3.2.0">
+    <link rel="stylesheet" href="css/finance.css?v=3.2.0">
+    <link rel="stylesheet" href="css/hr.css?v=3.2.0"><!-- HR: HR module -->
 </head>
 <body>
 
+<!-- ========== SIDEBAR (desktop) / DRAWER (phone) ========== -->
+<aside class="sidebar" id="sidebar" aria-label="Main navigation">
+    <div class="sb-head">
+        <a class="brand" href="#create" aria-label="EVAM Documents, create a document">
+            <img src="logo.svg" alt="" class="brand-logo" onerror="this.style.display='none'">
+            <span class="brand-name">Document desk</span>
+        </a>
+        <button type="button" class="icon-btn sb-close" id="sbClose" aria-label="Close menu"></button>
+    </div>
+    <div class="sb-scroll" id="sbScroll">
+        <div class="sb-top" id="sbTop"></div>
+        <div class="nav-group" data-group="desk">
+            <button type="button" class="nav-group-h" aria-expanded="true"><span>Document desk</span><i class="nav-chev"></i></button>
+            <nav class="mainnav nav-group-items" aria-label="Document desk">
+                <a href="#create" data-view="create" data-ic="filePlus"><span class="nav-label">Create document</span></a>
+                <a href="#documents" data-view="documents" data-ic="files"><span class="nav-label">Documents</span> <span class="nav-count" id="navDocCount"></span></a>
+                <a href="#import" data-view="import" data-ic="inbox"><span class="nav-label">Import old documents</span></a>
+                <a href="#contacts" data-view="contacts" data-ic="users"><span class="nav-label">Contacts</span></a>
+                <a href="#products" data-view="products" data-ic="package"><span class="nav-label">Products</span></a>
+            </nav>
+        </div>
+        <div id="finNavSlot"></div>
+        <div id="extNav"></div>
+    </div>
+    <div class="sb-foot">
+        <nav class="mainnav" aria-label="Preferences">
+            <a href="#settings" data-view="settings" data-ic="settings"><span class="nav-label">Settings</span></a>
+        </nav>
+    </div>
+</aside>
+<div class="sb-scrim" id="sbScrim" hidden></div>
+
+<!-- ========== TOP BAR ========== -->
 <header class="appbar">
-    <a class="brand" href="#create" aria-label="EVAM Documents, create a document">
-        <img src="logo.svg" alt="" class="brand-logo" onerror="this.style.display='none'">
-        <span class="brand-name">Document desk</span>
-    </a>
-    <nav class="mainnav" aria-label="Main">
-        <a href="#create" data-view="create">Create</a>
-        <a href="#documents" data-view="documents">Documents <span class="nav-count" id="navDocCount"></span></a>
-        <a href="#import" data-view="import">Import</a>
-        <a href="#contacts" data-view="contacts">Contacts</a>
-        <a href="#products" data-view="products">Products</a>
-        <a href="#settings" data-view="settings">Settings</a>
-    </nav>
+    <button type="button" class="icon-btn appbar-menu" id="sbOpen" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false"></button>
+    <a class="appbar-mark" href="#create" aria-label="EVAM Books home"><img src="favicon.svg" alt=""></a>
+    <div class="crumbs" id="crumbs" aria-live="polite"></div>
+    <button type="button" class="cmdk-trigger" id="cmdkBtn" aria-haspopup="dialog" aria-label="Search or jump to (Ctrl K)"><span class="cmdk-ic"></span><span class="cmdk-ph">Search or jump to…</span><kbd class="cmdk-kbd" id="cmdkKbd">Ctrl K</kbd></button>
     <div class="appbar-right">
         <button type="button" class="btn btn-ghost" id="fxBtn" title="Live currency rates from XE"></button>
+        <button type="button" class="icon-btn theme-btn" id="themeBtn" aria-label="Switch to dark theme" title="Dark theme"></button>
+        <div id="notifyBell"></div>
     </div>
 </header>
 
@@ -80,7 +110,7 @@
         <div class="page-head">
             <div>
                 <h1>Documents</h1>
-                <p class="page-sub">Everything you have saved in this browser.</p>
+                <p class="page-sub">Every quotation, invoice, order and letter you have saved, with its status and balance.</p>
             </div>
             <div class="page-actions">
                 <button type="button" class="btn btn-ghost" id="exportCsvBtn"></button>
@@ -198,11 +228,11 @@
 <dialog class="dialog dialog-fx" id="fxDialog">
     <div class="dialog-inner">
         <div class="dialog-head">
-            <h2>Live currency rates</h2>
+            <h2>Exchange rates</h2>
             <button type="button" class="icon-btn" id="fxClose" aria-label="Close"></button>
         </div>
-        <iframe id="xeFrame" title="XE currency converter" loading="lazy"></iframe>
-        <p class="hint">Rates from XE. Use the AED equivalent option on a document to print VAT in dirhams.</p>
+        <div class="dialog-body" id="fxBody"></div>
+        <div class="dialog-actions" id="fxActions"></div>
     </div>
 </dialog>
 
@@ -215,12 +245,31 @@
 <datalist id="contactList"></datalist>
 <datalist id="productList"></datalist>
 
-<script src="js/defaults.js?v=2.7.1"></script>
-<script src="js/util.js?v=2.7.1"></script>
-<script src="js/store.js?v=2.7.1"></script>
-<script src="js/editor.js?v=2.7.1"></script>
-<script src="js/render.js?v=2.7.1"></script>
-<script src="js/importer.js?v=2.7.1"></script>
-<script src="js/app.js?v=2.7.1"></script>
+<script src="js/vendor/anime.min.js?v=3.2.0"></script>
+<script src="js/defaults.js?v=3.2.0"></script>
+<script src="js/util.js?v=3.2.0"></script>
+<script src="js/store.js?v=3.2.0"></script>
+<script src="js/editor.js?v=3.2.0"></script>
+<script src="js/icons.js?v=3.2.0"></script>
+<script src="js/motion.js?v=3.2.0"></script>
+<script src="js/charts.js?v=3.2.0"></script>
+<script src="js/render.js?v=3.2.0"></script>
+<script src="js/importer.js?v=3.2.0"></script>
+<script src="js/fx.js?v=3.2.0"></script>
+<script src="js/server.js?v=3.2.0"></script>
+<script src="browser/sql-wasm.js"></script>
+<script src="browser/sql-wasm-binary.js"></script>
+<script src="browser/engine.js?v=3.2.0"></script>
+<script src="browser/bridge.js?v=3.2.0"></script>
+<script src="js/finance.js?v=3.2.0"></script>
+<script src="js/finance2.js?v=3.2.0"></script>
+<script src="js/finance3.js?v=3.2.0"></script>
+<script src="js/finance4.js?v=3.2.0"></script>
+<script src="js/finimport.js?v=3.2.0"></script>
+<script src="js/finpacks.js?v=3.2.0"></script>
+<script src="js/ui.js?v=3.2.0"></script>
+<script src="js/app.js?v=3.2.0"></script>
+<script src="js/hr.js?v=3.2.0"></script><!-- HR: HR module (core, self-service) -->
+<script src="js/hr2.js?v=3.2.0"></script><!-- HR: HR manager screens -->
 </body>
 </html>

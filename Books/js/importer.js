@@ -115,9 +115,9 @@ async function releaseOcr() {
 /* ---------- Reading ---------- */
 /* A line is { y, page, cells: [{ text, x0, x1 }], text }, x in 0–1 of the page width */
 
-function cellsToLine(cells, y, page) {
+function cellsToLine(cells, y, page, h = 0) {
     cells.sort((a, b) => a.x0 - b.x0);
-    return { y, page, cells, text: cells.map(c => c.text).join("  ") };
+    return { y, page, cells, h, text: cells.map(c => c.text).join("  ") };
 }
 
 async function readPdf(file, opts) {
@@ -182,34 +182,98 @@ function groupPdfItems(items, pageW, page) {
             }
         }
         if (cur) cells.push(cur);
-        return cellsToLine(cells.map(c => ({ text: c.text.replace(/\s+/g, " ").trim(), x0: c.start / pageW, x1: c.end / pageW })).filter(c => c.text), -r.y, page);
+        return cellsToLine(cells.map(c => ({ text: c.text.replace(/\s+/g, " ").trim(), x0: c.start / pageW, x1: c.end / pageW })).filter(c => c.text), -r.y, page, r.h / pageW);
     }).filter(l => l.cells.length);
 }
 
 /* Make scans easier to read: dark bands (white text on a coloured header) are inverted,
    light tints behind text are cleared, and everything becomes greyscale. */
-function prepareForOcr(canvas) {
+function prepareForOcr(canvas, strong = false) {
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     const { width: w, height: h } = canvas;
     const img = ctx.getImageData(0, 0, w, h);
     const d = img.data;
-    const lum = new Uint8ClampedArray(w * h);
-    for (let i = 0, p = 0; p < lum.length; i += 4, p++) lum[p] = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
-    // Rows that are mostly dark belong to a coloured band: invert them so the text is dark on light
-    const darkRow = new Uint8Array(h);
-    for (let y = 0; y < h; y++) {
-        let dark = 0;
-        for (let x = 0; x < w; x += 2) if (lum[y * w + x] < 110) dark++;
-        darkRow[y] = dark > (w / 2) * 0.45 ? 1 : 0;
-    }
-    for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-            const p = y * w + x;
-            let v = darkRow[y] ? 255 - lum[p] : lum[p];
-            if (v > 215) v = 255;            // clear tints and paper texture
-            const i = p * 4;
-            d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255;
+    const N = w * h;
+    const lum = new Uint8ClampedArray(N);
+    for (let i = 0, p = 0; p < N; i += 4, p++) lum[p] = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
+    // Light text on a dark band or pill (headers, table headings): wherever the neighbourhood is mostly dark,
+    // invert it so all text is dark on light
+    {
+        const R = Math.max(12, Math.round(w / 90));
+        const D = new Float64Array((w + 1) * (h + 1));
+        for (let y = 1; y <= h; y++) { let row = 0; for (let x = 1; x <= w; x++) { row += lum[(y - 1) * w + x - 1] < 110 ? 1 : 0; D[y * (w + 1) + x] = D[(y - 1) * (w + 1) + x] + row; } }
+        const inv = new Uint8Array(N);
+        for (let y = 0; y < h; y++) {
+            const y0 = Math.max(0, y - R), y1 = Math.min(h - 1, y + R);
+            for (let x = 0; x < w; x++) {
+                const x0 = Math.max(0, x - R), x1 = Math.min(w - 1, x + R);
+                const cnt = (x1 - x0 + 1) * (y1 - y0 + 1);
+                const dark = D[(y1 + 1) * (w + 1) + x1 + 1] - D[y0 * (w + 1) + x1 + 1] - D[(y1 + 1) * (w + 1) + x0] + D[y0 * (w + 1) + x0];
+                if (dark > cnt * 0.55) inv[y * w + x] = 1;
+            }
         }
+        for (let p = 0; p < N; p++) if (inv[p]) lum[p] = 255 - lum[p];
+    }
+    // 1. Black and white against the local background (Bradley): copes with grey paper, shadows and tints
+    const S = Math.max(15, Math.round(w / 32)) | 1, half = S >> 1;
+    const integ = new Float64Array((w + 1) * (h + 1));
+    for (let y = 1; y <= h; y++) { let row = 0; for (let x = 1; x <= w; x++) { row += lum[(y - 1) * w + x - 1]; integ[y * (w + 1) + x] = integ[(y - 1) * (w + 1) + x] + row; } }
+    const bw = new Uint8Array(N);   // 1 = ink
+    for (let y = 0; y < h; y++) {
+        const y0 = Math.max(0, y - half), y1 = Math.min(h - 1, y + half);
+        for (let x = 0; x < w; x++) {
+            const x0 = Math.max(0, x - half), x1 = Math.min(w - 1, x + half);
+            const cnt = (x1 - x0 + 1) * (y1 - y0 + 1);
+            const sum = integ[(y1 + 1) * (w + 1) + x1 + 1] - integ[y0 * (w + 1) + x1 + 1] - integ[(y1 + 1) * (w + 1) + x0] + integ[y0 * (w + 1) + x0];
+            const v = lum[y * w + x];
+            bw[y * w + x] = v < 215 && v * cnt < sum * 0.86 ? 1 : 0;
+        }
+    }
+    // 2. Table rules and borders confuse text recognition: remove long straight runs of ink
+    const minH = Math.max(50, Math.round(w * 0.04)), minV = Math.max(50, Math.round(h * 0.022));
+    const kill = new Uint8Array(N);
+    // (each run looks at three neighbouring rows / columns, so slightly tilted scans still count as straight)
+    const inkH = (x, y) => bw[y * w + x] || (y > 0 && bw[(y - 1) * w + x]) || (y < h - 1 && bw[(y + 1) * w + x]);
+    const inkV = (x, y) => bw[y * w + x] || (x > 0 && bw[y * w + x - 1]) || (x < w - 1 && bw[y * w + x + 1]);
+    // A rule is a long, thin run of ink along one row (small gaps allowed) with paper just above and below it
+    const thinH = (x0, x1, y) => { let ink = 0, n = 0; for (let x = x0; x < x1; x += 3) { n++; if (y >= 5 && bw[(y - 5) * w + x]) ink++; if (y < h - 5 && bw[(y + 5) * w + x]) ink++; } return ink < n * 0.5; };
+    const thinV = (y0, y1, x) => { let ink = 0, n = 0; for (let y = y0; y < y1; y += 3) { n++; if (x >= 5 && bw[y * w + x - 5]) ink++; if (x < w - 5 && bw[y * w + x + 5]) ink++; } return ink < n * 0.5; };
+    for (let y = 0; y < h; y++) {
+        let start = -1, gap = 0;
+        for (let x = 0; x <= w; x++) {
+            const on = x < w && bw[y * w + x];
+            if (on) { if (start < 0) start = x; gap = 0; continue; }
+            if (start >= 0 && ++gap <= 2 && x < w) continue;
+            const end = x - gap + 1;
+            if (start >= 0 && end - start >= minH && thinH(start, end, y)) for (let k = start; k < end; k++) for (const yy of [y - 1, y, y + 1]) if (yy >= 0 && yy < h && bw[yy * w + k]) kill[yy * w + k] = 1;
+            start = -1; gap = 0;
+        }
+    }
+    for (let x = 0; x < w; x++) {
+        let start = -1, gap = 0;
+        for (let y = 0; y <= h; y++) {
+            const on = y < h && bw[y * w + x];
+            if (on) { if (start < 0) start = y; gap = 0; continue; }
+            if (start >= 0 && ++gap <= 2 && y < h) continue;
+            const end = y - gap + 1;
+            if (start >= 0 && end - start >= minV && thinV(start, end, x)) for (let k = start; k < end; k++) for (const xx of [x - 1, x, x + 1]) if (xx >= 0 && xx < w && bw[k * w + xx]) kill[k * w + xx] = 1;
+            start = -1; gap = 0;
+        }
+    }
+    if (!strong) {
+        // Gentle (first try): keep the grey text as it is, only clear the paper tint and the table rules
+        for (let p = 0, i = 0; p < N; p++, i += 4) { let v = kill[p] ? 255 : lum[p]; if (v > 215) v = 255; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
+    } else {
+        for (let p = 0; p < N; p++) if (kill[p]) bw[p] = 0;
+        // Strong (second try, for poor scans): black and white, without isolated specks
+        const out = new Uint8Array(bw);
+        for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+            const p = y * w + x;
+            if (!bw[p]) continue;
+            const n = bw[p - 1] + bw[p + 1] + bw[p - w] + bw[p + w] + bw[p - w - 1] + bw[p - w + 1] + bw[p + w - 1] + bw[p + w + 1];
+            if (n <= 1) out[p] = 0;
+        }
+        for (let p = 0, i = 0; p < N; p++, i += 4) { const v = out[p] ? 0 : 255; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
     }
     ctx.putImageData(img, 0, 0);
     return canvas;
@@ -228,7 +292,7 @@ function ocrLines(data, width, page) {
             else { if (cur) cells.push(cur); cur = { text: w.text, x0: w.bbox.x0, x1: w.bbox.x1 }; }
         }
         if (cur) cells.push(cur);
-        out.push(cellsToLine(cells.map(c => ({ text: c.text.trim(), x0: c.x0 / width, x1: c.x1 / width })), line.bbox.y0, page));
+        out.push(cellsToLine(cells.map(c => ({ text: c.text.trim(), x0: c.x0 / width, x1: c.x1 / width })), line.bbox.y0, page, h / width));
     }
     return out;
 }
@@ -265,10 +329,14 @@ function parseAmount(raw) {
     if (raw == null) return null;
     let s = String(raw).trim();
     if (!s) return null;
-    let neg = /^\(.*\)$/.test(s) || /^-/.test(s) || /-$/.test(s);
-    s = s.replace(CUR_RE, "").replace(/dhs?\.?|د\.إ|[$€£₹]/gi, "").replace(/[()\s]/g, "").replace(/^-|-$/g, "");
+    s = s.replace(/(\d)[:;](\d{2})$/, "$1.$2");      // 95:00 → 95.00 (a dot read as a colon)
+    let neg = /^\(.*\)$/.test(s) || /^-/.test(s) || /-$/.test(s) || /^\s*-\s*(aed|usd|eur|gbp)\b/i.test(s);
+    s = s.replace(CUR_RE, "").replace(/dhs?\.?|د\.إ|[$€£₹]/gi, "").replace(/\b(cr|dr)\.?$/i, "").replace(/[()\s]/g, "").replace(/^[-+]|[-+]$/g, "");
     s = s.replace(/%$/, "");
     if (!/^\d[\d.,]*$/.test(s)) return null;
+    // Text recognition often reads a thousands comma as a dot: 120.450.35 → 120450.35, 2.77200 → 2772.00
+    if ((s.match(/\./g) || []).length > 1 && !s.includes(",")) s = s.slice(0, s.lastIndexOf(".")).replace(/\./g, "") + s.slice(s.lastIndexOf("."));
+    else if (/^\d{1,3}[.,]\d{5}$/.test(s)) s = s.replace(/[.,]/, "").replace(/(\d{2})$/, ".$1");
     const lastComma = s.lastIndexOf(","), lastDot = s.lastIndexOf(".");
     if (lastComma > lastDot && s.length - lastComma - 1 <= 2 && (lastDot !== -1 || /\d{1,3}(\.\d{3})+,\d{1,2}$/.test(s) || /^\d+,\d{1,2}$/.test(s))) {
         s = s.replace(/\./g, "").replace(",", "."); // 1.234,50
@@ -305,6 +373,8 @@ function findDates(s, monthFirst = false) {
         if (!best) break;
         let [y, mo, da] = best.d.f(best.m, monthFirst).map(Number);
         if (y < 100) y += 2000;
+        else if (y >= 200 && y < 300) y = 2000 + (y % 100);      // text recognition dropped a digit: 226 → 2026
+        else if (y > 2100 && y < 3000 && y % 100 <= 60) y = 2000 + (y % 100);   // a misread digit: 2626 → 2026
         if (mo > 12 && da <= 12) [mo, da] = [da, mo];
         if (y >= 1990 && y <= 2100 && mo >= 1 && mo <= 12 && da >= 1 && da <= 31) {
             out.push({ iso: `${y}-${String(mo).padStart(2, "0")}-${String(da).padStart(2, "0")}`, index: best.m.index, raw: best.m[0] });
@@ -338,7 +408,7 @@ function detectType(lines) {
 }
 
 const LABEL = {
-    number: /(?:[a-z]?n|(?<![a-z])m)vo[il1]ce\s*\.?\s*n[o0]\b\.?|\bquot[a-z]{0,3}on\s*\.?\s*n[o0]\b\.?|\b(tax\s*invoice|invoice|inv|bill|quotation|quote|qtn|q|estimate|est|proforma|pi|po|p\.o|lpo|purchase\s*order|order|credit\s*note|cn|delivery\s*note|dn|do|document|doc|receipt|ref(?:erence)?|serial)\s*\.?\s*(no|nr|num|number)\b\.?|\b(tax\s*invoice|invoice|inv|quotation|quote|estimate|proforma|po|lpo|order|bill|receipt|credit\s*note|delivery\s*note)\s*#/i,
+    number: /(?:[a-z]?n|(?<![a-z])m)vo[il1]ce\s*\.?\s*n[o0]\b\.?|\bquot[a-z]{0,3}on\s*\.?\s*n[o0]\b\.?|\b(tax\s*invoice|invoice|inv|bill|quotation|quote|qtn|q|estimate|est|proforma|pi|po|p\.o|lpo|purchase\s*order|order|credit\s*note|cn|delivery\s*note|dn|do|document|doc|receipt|ref(?:erence)?|serial)\s*\.?\s*(no|nr|num|number)\b\.?|\b(tax\s*invoice|invoice|inv|quotation|quote|estimate|proforma|po|lpo|order|bill|receipt|credit\s*note|delivery\s*note)\s*#|^\s*#\s*(?=[A-Z0-9-]*\d)|^\s*(?:voucher|document|doc)\s*(?:no\.?|number|#)|\b(?:tax\s*invoice|invoice|receipt|bill)(?=\s*:\s*[A-Z]{0,6}[-\/]?\d[A-Z0-9\/-]*\s*$)/i,
     date: /\b(invoice|issue|issued|document|doc|order|quotation|po|delivery|credit\s*note)?\s*date\b|\bdated\b/i,
     due: /\b(due|payment\s*due|pay\s*by)\b/i,
     valid: /\b(valid(ity)?\s*(until|till|up\s*to)?|expir(y|es|ation))\b/i,
@@ -551,7 +621,7 @@ function findIssuer(lines, ownName, ownTrn) {
 /* ---------- Lines & totals ---------- */
 const HEAD_WORDS = {
     no: /^(s\.?\s*no\.?|sl\.?\s*no\.?|sr\.?|#|no\.?|item\s*no\.?|line)$/i,
-    desc: /description|particulars|details|item|product|goods|services?|article/i,
+    desc: /descr|escription|particulars|details|item|tem\s*&|product|goods|services?|article|activity/i,
     hs: /\bhs\b|hsn|h\.s\.|tariff/i,
     qty: /\bqty\b|quantity|qnty|\bpcs\b|units?$|no\.\s*of/i,
     unit: /^(unit|uom|u\/m)$/i,
@@ -559,9 +629,9 @@ const HEAD_WORDS = {
     disc: /disc/i,
     vatRate: /(vat|tax)\s*(%|rate)|%\s*(vat|tax)|^%$/i,
     vatAmt: /^(vat|tax)(\s*amount|\s*amt)?$|vat\s*amount|tax\s*amount|^vat\s*\(/i,
-    amount: /amount|total|value|net|line\s*total/i
+    amount: /amount|amoun|\bamt\b|total|value|net|line\s*total/i
 };
-const TOTAL_LINE = /\b(sub\s*-?\s*total|total|vat|tax|grand|balance|amount\s*(due|payable|paid|received)|discount|freight|shipping|rounding|net\s*payable|in\s*words)\b/i;
+const TOTAL_LINE = /\b(sub\s*-?\s*total|subtotal|total|vat|tax|grand|balance|amount\s*(due|payable|paid|received)|discount|freight|shipping|rounding|net\s*payable|net\s*(amount|total|value)|taxable\s*(amount|value)|payments?\s*made|in\s*words)\b/i;
 
 function findHeader(lines) {
     for (let i = 0; i < lines.length; i++) {
@@ -642,14 +712,18 @@ function parseItems(lines, header) {
 
 /* For layouts whose header row could not be read (e.g. white text on a dark band):
    find rows that start with a line number and end in amounts, then work out which number is which. */
-function parseItemsByPattern(lines) {
+function parseItemsByPattern(lines, loose = false) {
     const items = [];
     let expect = 1;
     for (let i = 0; i < lines.length; i++) {
         const cells = lines[i].cells.map(c => c.text.trim()).filter(Boolean);
         if (!cells.length) continue;
-        const lead = /^(\d{1,3})[.)]?\s*(.*)$/.exec(cells[0]);
-        if (!lead || Number(lead[1]) !== expect) {
+        // Loose: any row whose numbers multiply out (qty × rate = amount), numbered or not
+        if (loose && items.length && TOTAL_LINE.test(lines[i].text) && cells.some(isNum)) break;
+        let lead = /^(\d{1,3})[.)]?\s*(.*)$/.exec(cells[0]);
+        if (loose && (!lead || !/[a-z]/i.test(lead[2] || "") && cells.length > 1 && !isNum(cells[1]))) lead = [cells[0], String(expect), lead ? cells[0].replace(/^\d{1,3}[.)]?\s*/, "") : cells[0]];
+        if (loose && lead && !/[a-z]{2}/i.test(lead[2] + " " + cells.slice(1).filter(c => !isNum(c)).join(" "))) continue;
+        if (!lead || (!loose && Number(lead[1]) !== expect)) {
             // A text-only line under an item is its description
             if (items.length && !cells.some(isNum) && !TOTAL_LINE.test(lines[i].text) && lines[i].text.length < 160 && i === items[items.length - 1]._line + 1) {
                 items[items.length - 1].desc += (items[items.length - 1].desc ? "\n" : "") + cells.join(" ");
@@ -705,6 +779,7 @@ function parseItemsByPattern(lines) {
             }
         }
         }
+        if (!found && loose) continue;
         if (!found) { found = { qty: others.length >= 2 ? others[0] : 1, rate: others.length >= 2 ? others[1] : amount }; vat = pcts.length ? pcts[pcts.length - 1] : null; }
         items.push({ name, desc: "", unit, hs: "", qty: found.qty, rate: found.rate, disc: found.disc, vatRate: vat, amount: found.incl ? undefined : amount, _line: i });
         expect++;
@@ -731,17 +806,22 @@ function findTotals(lines) {
         if (v === null) continue;
         const rateM = /(vat|tax)[^%\d]{0,8}(\d{1,2}(?:\.\d+)?)\s*%/i.exec(l.text) || /(\d{1,2}(?:\.\d+)?)\s*%\s*(vat|tax)/i.exec(l.text);
         if (/sub\s*-?\s*total|total\s*(excl|excluding|before|ex\b|ex\.|w\/o)|taxable\s*(amount|value)|net\s*(amount|total)(?!\s*payable)|total\s*value\s*excl/.test(t)) { if (out.subtotal === undefined) out.subtotal = v; }
-        else if (/grand\s*total|total\s*(amount\s*)?(due|payable)|amount\s*(due|payable)|net\s*payable|total\s*(incl|inclusive|including)|total\s*invoice\s*(value|amount)|invoice\s*total|balance\s*due/.test(t)) { if (out.total === undefined) out.total = v; }
-        else if (/\b(vat|tax)\b/.test(t) && !/incl|excl|total/.test(t)) { if (out.vat === undefined) { out.vat = v; if (rateM) out.vatRate = parseFloat(rateM[2] || rateM[1]); } }
+        // "Balance due" is what is left after payments, not the invoice total
+        else if (/\b(balance\s*(due|payable|outstanding)|amount\s*outstanding|remaining\s*balance)\b/.test(t) && !/grand\s*total|invoice\s*total/.test(t)) { if (out.balanceDue === undefined) out.balanceDue = v; }
+        else if (/grand\s*total|total\s*(amount\s*)?(due|payable)|amount\s*(due|payable)|net\s*payable|total\s*\(?\s*(incl|inclusive|including)|total\s*invoice\s*(value|amount)|invoice\s*total|total\s*\((aed|usd|eur|gbp|inr)\)|total\s+(aed|usd|eur|gbp|inr)\b/.test(t)) { if (out.total === undefined) out.total = v; }
+        else if (/\b(vat|tax)\b/.test(t) && !/taxable|tax\s*(reg|invoice|no\b)|trn/.test(t) && (!/incl|excl|total/.test(t) || /total\s*(vat|tax)\b|(vat|tax)\s*(total|amount)|(vat|tax)[^a-z]{0,8}incl/.test(t))) { if (out.vat === undefined) { out.vat = v; if (rateM) out.vatRate = parseFloat(rateM[2] || rateM[1]); } }
         else if (/discount/.test(t)) out.discount = Math.abs(v);
         else if (/^\s*(freight|shipping|insurance|handling|delivery\s*charges?|customs(\s*clearance)?|packing(\s*charges?)?|courier|other\s*charges)\b/i.test(l.text) && l.cells.filter(c => isNum(c.text)).length <= 2) {
             out.charges = out.charges || [];
             out.charges.push({ label: l.cells[0].text.replace(/\s*[:(].*$/, "").trim(), amount: v });
         }
-        else if (/amount\s*(paid|received)|paid\s*amount|advance\s*(paid|received)/.test(t)) out.paid = v;
+        else if (/amount\s*(paid|received)|paid\s*amount|advance\s*(paid|received)|payments?\s*(made|received)|less\s*:?\s*(payment|paid)|\(-\)\s*paid/.test(t)) out.paid = Math.abs(v);
         else if (/\btotal\b/.test(t) && out.total === undefined) out.totalLoose = v;
     }
     if (out.total === undefined && out.totalLoose !== undefined) out.total = out.totalLoose;
+    // Only a balance due: the total is that plus whatever was paid
+    if (out.total === undefined && out.balanceDue !== undefined) out.total = out.balanceDue + (out.paid || 0);
+    if (out.paid === undefined && out.balanceDue !== undefined && out.total !== undefined && out.total - out.balanceDue > 0.004) out.paid = Math.round((out.total - out.balanceDue) * 1000) / 1000;
     return out;
 }
 
@@ -908,6 +988,7 @@ function parseToDoc(read, file) {
         // Try reading rows by their arithmetic instead and keep whichever agrees with the totals best
         const alt = buildItems(parseItemsByPattern(lines));
         if (score(alt) > score(built)) built = alt;
+        if (score(built) < best) { const alt2 = buildItems(parseItemsByPattern(lines, true)); if (score(alt2) > score(built)) built = alt2; }
     }
     doc.items = built;
     doc.charges = chargeList;
@@ -918,21 +999,51 @@ function parseToDoc(read, file) {
 
     const target = totals.total != null ? totals.total : null;
     let check = computeTotals(doc);
+    // Mixed VAT: some lines zero-rated. Find which lines carry VAT so the VAT and total match the original
+    const STD = [0, 5, 10, 15, 18, 20];
+    const oddRate = doc.items.some(it => !STD.includes(round(num(it.vat), 2)));
+    if (target != null && totals.vat != null && built.length > 1 && built.length <= 12 && (!near(check.total, target) || oddRate)) {
+        const rate = STD.includes(num(totals.vatRate)) && num(totals.vatRate) ? num(totals.vatRate) : 5;
+        const nets = doc.items.map(it => computeTotals({ ...doc, items: [it], charges: [], discount: { type: "amt", value: 0 } }).taxable);
+        for (let mask = 1; mask < (1 << nets.length) - 1; mask++) {
+            const vat = nets.reduce((s2, v, i) => s2 + (mask & (1 << i) ? v * rate / 100 : 0), 0);
+            if (Math.abs(vat - totals.vat) < 0.02 * Math.max(1, nets.length)) {
+                doc.items.forEach((it, i) => { it.vat = mask & (1 << i) ? rate : 0; });
+                const c2 = computeTotals(doc);
+                if (near(c2.total, target)) { check = c2; break; }
+            }
+        }
+    }
     const matches = target == null ? (totals.subtotal != null ? near(check.taxable, totals.subtotal) : built.length > 0) : near(check.total, target);
 
     if (!built.length || !matches) {
         // Fall back to summary lines that reproduce the original totals exactly
+        // Only trust a subtotal / VAT that fit the total (a misread one would give a negative or absurd line)
+        if (target != null && totals.subtotal != null && (totals.subtotal > target + 0.01 || totals.subtotal <= 0)) delete totals.subtotal;
+        if (target != null && totals.vat != null && (totals.vat < 0 || totals.vat >= target)) delete totals.vat;
         const sub = totals.subtotal != null ? totals.subtotal : (target != null && totals.vat != null ? round(target - totals.vat, dec) : target);
         if (sub != null) {
             const keepText = built.map(b => `${b.name}${b.qty ? ` × ${fmtQty(b.qty)}` : ""}`).filter(Boolean).slice(0, 20).join("\n");
             let rate = vatRate;
             if (totals.vat != null && sub) rate = round(totals.vat / sub * 100, 4);
+            if (!(rate >= 0 && rate <= 30)) rate = vatRate >= 0 && vatRate <= 30 ? vatRate : 5;
+            const STDR = [0, 5, 10, 15];
+            const nearStd = STDR.find(r => Math.abs(r - rate) < 0.6);
+            if (nearStd !== undefined) rate = nearStd;
             doc.items = [newItem({ name: built.length ? "Goods and services as per original document" : `Imported from ${stem}`, desc: keepText, qty: 1, rate: sub, vat: rate })];
             doc.discount = { type: "amt", value: 0 };
             doc.charges = [];
             check = computeTotals(doc);
             if (target != null && !near(check.total, target)) {
-                doc.charges = [{ label: "Rounding", amount: round(target - check.total, dec), vat: 0 }];
+                // Nudge the line so the total matches; a small positive rounding line only if still needed
+                const diff = target - check.total;
+                // Nudge the line (to the cent) so the total matches; whatever is left is a small positive rounding line
+                const step = Math.pow(10, -dec);
+                let r = round(num(doc.items[0].rate) + diff / (1 + num(doc.items[0].vat) / 100), dec);
+                doc.items[0].rate = r; check = computeTotals(doc);
+                for (let k = 0; k < 3 && check.total > target + step / 2; k++) { r = round(r - step, dec); doc.items[0].rate = r; check = computeTotals(doc); }
+                const left = round(target - check.total, dec);
+                if (left > 0) doc.charges = [{ label: "Rounding", amount: left, vat: 0 }];
             }
             issues.push(built.length ? "The line items did not add up to the original total, so one summary line was used. The original lines are listed in its description." : "No line items could be read; one summary line carries the original amount.");
         } else {
@@ -948,7 +1059,7 @@ function parseToDoc(read, file) {
     const final = computeTotals(doc);
     if (DOC_TYPES[type].paid) {
         if (totals.paid && totals.paid > 0) doc.paid = Math.min(totals.paid, final.total);
-        const zeroBalance = lines.some(l => /balance\s*(due)?|amount\s*due/i.test(l.text) && /\b0(\.0+)?\s*$/.test(l.text.trim()) && final.total > 0);
+        const zeroBalance = (totals.balanceDue !== undefined && Math.abs(totals.balanceDue) < 0.005 && final.total > 0) || lines.some(l => /balance\s*(due)?|amount\s*due/i.test(l.text) && /(^|\s)0(\.0+)?\s*$/.test(l.text.trim()) && final.total > 0);
         if (/^\s*paid\s*$/im.test(text) || zeroBalance) { doc.paid = final.total; doc.status = "paid"; }
     }
     return { doc, issues, text };
@@ -994,7 +1105,31 @@ async function importFile(file, opts) {
         fileId, fileName: file.name, fileSize: file.size, method: read.method, pages: read.pages, confidence: conf,
         issues, checked: issues.length === 0, importedAt: Date.now(), textPreview: text.slice(0, 1500)
     };
-    if (!Store.saveDoc(doc)) throw new Error("Browser storage is full. Export a backup and remove old documents.");
+    if (typeof Server !== "undefined" && Server.online) {
+        // Saved on the server straight away, so a refusal shows here instead of vanishing later
+        const paid = DOC_TYPES[doc.type].paid ? Math.max(0, num(doc.paid)) : 0;
+        delete doc.paid;
+        if (doc.status === "paid" || doc.status === "partial") doc.status = "sent";
+        if (doc.currency !== "AED" && !num(doc.fx?.rate)) doc.fx = { ...(doc.fx || {}), rate: LiveFX.rate(doc.currency) || "" };
+        try { await Server.save("doc", doc); }
+        catch (e) { await FileStore.remove(fileId); throw new Error(`The books refused it: ${e.message}`); }
+        // Paid on the original: record the payment so it is not shown as owed
+        if (paid > 0 && doc.type === "invoice") {
+            const banks = (Server.fin.account || []).filter(a => !a.archived && (a.subtype === "bank" || a.subtype === "cash"));
+            const acc = banks.find(a => a.subtype === "bank" && (a.currency || "AED") === doc.currency) || banks.find(a => (a.currency || "AED") === doc.currency) || banks.find(a => (a.currency || "AED") === "AED");
+            const total = computeTotals({ ...doc, paid: 0 }).total;
+            const amt = round(Math.min(paid, total), decimalsFor(doc.currency));
+            const sameCur = acc && (acc.currency || "AED") === doc.currency;
+            try {
+                await Server.save("payment", { id: uid("pay"), date: doc.paidDate || doc.date, contactName: doc.party.name, currency: sameCur ? doc.currency : "AED", rate: sameCur ? (doc.currency === "AED" ? 1 : num(doc.fx.rate)) : 1,
+                    amount: sameCur ? amt : round(amt * (doc.currency === "AED" ? 1 : num(doc.fx.rate)), 2), accountId: acc.id, method: "Bank transfer", reference: "Paid before import",
+                    allocations: sameCur ? [{ docId: doc.id, amount: amt }] : [] });
+                issues.push(`Marked as paid: a payment of ${fmt(amt, doc.currency)} was recorded into ${acc.name} on ${fmtDate(doc.paidDate || doc.date)}. Change its date or account in Finance → Payments received if needed.`);
+            } catch (e) { issues.push(`The original shows ${fmt(amt, doc.currency)} paid, but the payment could not be recorded (${e.message}). Record it from the invoice.`); }
+            const saved = Store.getDoc(doc.id);
+            if (saved) { saved.import = { ...saved.import, issues }; }
+        }
+    } else if (!Store.saveDoc(doc)) throw new Error("Browser storage is full. Export a backup and remove old documents.");
 
     if (opts.addContacts && doc.party.name && !DOC_TYPES[doc.type].text && !Store.findByName("contacts", doc.party.name)) {
         Store.upsert("contacts", { id: uid("c"), role: doc.type === "purchaseOrder" ? "vendor" : "customer", name: doc.party.name, attn: doc.party.attn, trn: doc.party.trn, address: doc.party.address, phone: doc.party.phone, email: doc.party.email });

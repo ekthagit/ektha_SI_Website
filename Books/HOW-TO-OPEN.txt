@@ -1,0 +1,20 @@
+EVAM Books — browser edition
+============================
+
+1. Unzip this folder anywhere on your computer (keep all the files together).
+2. Double-click  EVAM-Books.html  — it opens in Chrome, Edge, Firefox or Safari.
+3. You are signed in to an example company. Everything works: documents,
+   invoices and payments, bills, expenses, banking, VAT and reports.
+
+Example sign-ins (password for all: Evam Books 2026)
+  musani@evam.ae  Owner
+  aisha@evam.ae   Accountant
+  rahul@evam.ae   Sales
+  omar@evam.ae    Staff
+  fatima@evam.ae  Employee (self-service: clock in, leave, payslips)
+
+Your data is saved in this browser on this computer. Nothing is sent anywhere.
+Use the "Browser edition" button (top right) to download a backup, restore one,
+reset to the example company, or start with an empty company (setup code: DEMO).
+
+Use one tab at a time. A private/incognito window forgets everything when closed.

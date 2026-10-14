@@ -191,8 +191,8 @@ function sanitizeHTML(html) {
 
 function htmlIsEmpty(html) {
     if (!html) return true;
-    const d = document.createElement("div");
-    d.innerHTML = html;
+    // An inert document: nothing in it loads or runs
+    const d = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html").body;
     return d.textContent.trim() === "" && !d.querySelector("img,hr,table");
 }
 

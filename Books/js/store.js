@@ -6,6 +6,8 @@
 
 const STORE_KEY = "evamdocs.v2";
 const DRAFT_KEY = "evamdocs.v2.draft";
+/* Drafts in EVAM Books are kept apart from the browser-only copy */
+const draftKey = () => (typeof Server !== "undefined" && Server.online && Server.user ? `evambooks.draft.${Server.user.id}` : DRAFT_KEY);
 
 const Store = {
     data: null,
@@ -117,10 +119,10 @@ const Store = {
 
     /* ---------- Draft autosave ---------- */
     saveDraft(doc) {
-        try { localStorage.setItem(DRAFT_KEY, JSON.stringify(doc)); } catch (e) { /* storage full: ignore draft */ }
+        try { localStorage.setItem(draftKey(), JSON.stringify(doc)); } catch (e) { /* storage full: ignore draft */ }
     },
     loadDraft() {
-        try { const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null"); return d ? upgradeDoc(d) : null; } catch (e) { return null; }
+        try { const d = JSON.parse(localStorage.getItem(draftKey()) || "null"); return d ? upgradeDoc(d) : null; } catch (e) { return null; }
     },
 
     /* ---------- Backup ---------- */
@@ -245,6 +247,7 @@ function upgradeDoc(doc) {
     doc.fx = { show: false, rate: "", ...(doc.fx || {}) };
     doc.columns = deepMerge(JSON.parse(JSON.stringify(DEFAULT_COLUMNS)), doc.columns || {});
     doc.signature = { show: false, name: "", title: "", ...(doc.signature || {}) };
+    if ((doc.type === "invoice" || doc.type === "creditNote") && !doc.taxTreatment) doc.taxTreatment = "standard";
     doc.signature.marks = normMarks(doc.signature.marks || (Store.settings && Store.settings.brand && Store.settings.brand.marks));
     doc.letter = { to: "", subject: "", body: "", showLeft: false, leftName: "", leftTitle: "", leftLabel: "", showRight: true, rightLabel: "", ...(doc.letter || {}) };
     const co = (Store.data && Store.settings.company) || DEFAULT_COMPANY;
@@ -329,7 +332,7 @@ function computeTotals(doc) {
     const taxable = r(subtotal - discountTotal + chargesTotal);
     const vatTotal = r(vatGroups.reduce((s, g) => s + g.vat, 0));
     const total = r(taxable + vatTotal);
-    const paid = DOC_TYPES[doc.type].paid ? r(num(doc.paid)) : 0;
+    const paid = (DOC_TYPES[doc.type] || {}).paid ? r(num(doc.paid)) : 0;
     const balance = r(total - paid);
     const rate = num(doc.fx.rate);
     const fx = doc.fx.show && cur !== "AED" && rate > 0
@@ -346,6 +349,7 @@ function computeTotals(doc) {
 const CLOSED_INVOICE = ["paid", "cancelled"];
 
 function creditsFor(inv) {
+    if (typeof Server !== "undefined" && Server.online) return num(inv.credited);
     if (!Store.data) return 0;
     const n = String(inv.number || "").trim().toLowerCase();
     if (!n) return 0;
@@ -357,6 +361,11 @@ function creditsFor(inv) {
 /* What is still owed on an invoice after payments received and credit notes */
 function invoiceBalance(inv) {
     if (inv.type !== "invoice" || CLOSED_INVOICE.includes(inv.status)) return 0;
+    if (typeof Server !== "undefined" && Server.online) {
+        // Payments and credit notes are recorded on the server
+        const t = computeTotals({ ...inv, paid: 0 });
+        return Math.max(0, round(t.total - num(inv.paid) - num(inv.credited), t.dec));
+    }
     const t = computeTotals(inv);
     return Math.max(0, round(t.balance - creditsFor(inv), t.dec));
 }
@@ -367,7 +376,8 @@ function effectiveStatus(doc) {
     if (doc.type === "invoice" && !CLOSED_INVOICE.includes(doc.status)) {
         const owed = invoiceBalance(doc);
         if (owed <= 0 && computeTotals(doc).total > 0 && creditsFor(doc) > 0) return "credited";
-        if (owed > 0 && doc.due && doc.due < today) return "overdue";
+        // No due date means due on the invoice date (the same rule as the reports)
+        if (owed > 0 && (doc.due || doc.date) && (doc.due || doc.date) < today) return "overdue";
     }
     if ((doc.type === "quotation" || doc.type === "proforma") && ["draft", "sent"].includes(doc.status) && doc.valid && doc.valid < today) return "expired";
     return doc.status;
@@ -381,7 +391,7 @@ function amountDue(doc) {
 
 /* Keep "amount received" and the status in step, and remember when money came in */
 function syncPayment(doc, changedField) {
-    if (doc.type !== "invoice") return;
+    if (doc.type !== "invoice" || (typeof Server !== "undefined" && Server.online)) return;
     const total = amountDue(doc);
     if (changedField === "status") {
         if (doc.status === "paid" && num(doc.paid) < total) { doc.paid = total; doc.paidAt = Date.now(); }

@@ -38,7 +38,7 @@ const ICON_PATHS = {
 };
 
 function icon(name, size = 16) {
-    return `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ""}</svg>`;
+    return `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ""}</svg>`;
 }
 
 /* ----------------------------------------------------------
@@ -93,7 +93,7 @@ function createRichEditor(host, opts = {}) {
     const area = wrap.querySelector(".rte-area");
     area.style.minHeight = (opts.minHeight || 140) + "px";
     area.dataset.placeholder = opts.placeholder || "Type here…";
-    area.innerHTML = opts.value || "";
+    area.innerHTML = sanitizeHTML(opts.value || "");
     if (opts.label) area.setAttribute("aria-label", opts.label);
 
     const fire = () => { refresh(); opts.onInput && opts.onInput(sanitizeHTML(area.innerHTML)); };
@@ -142,6 +142,6 @@ function createRichEditor(host, opts = {}) {
     return {
         el: wrap,
         get: () => sanitizeHTML(area.innerHTML),
-        set: (html) => { area.innerHTML = html || ""; refresh(); }
+        set: (html) => { area.innerHTML = sanitizeHTML(html || ""); refresh(); }
     };
 }

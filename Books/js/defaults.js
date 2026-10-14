@@ -5,7 +5,7 @@
    and saved in the browser.
    ========================================================== */
 
-const APP_VERSION = "2.7.1";
+const APP_VERSION = "3.1";
 
 /* ---------- Currencies (words + decimals) ---------- */
 const CURRENCIES = {
@@ -64,6 +64,14 @@ const DOC_TYPES = {
         statuses: ["draft", "sent", "confirmed", "received", "cancelled"],
         footer: "This is a computer-generated purchase order and no signature is required."
     },
+    salesOrder: {
+        label: "Sales order", title: "SALES ORDER", short: "Sales order", noun: "customer",
+        party: "Customer", ship: "Deliver to",
+        dateLabel: "Order date", due: "Expected delivery", ref: "Customer PO no.",
+        prices: true, bank: false, paid: false,
+        statuses: ["draft", "confirmed", "invoiced", "cancelled"],
+        footer: "Thank you for your order. Goods remain our property until paid in full."
+    },
     creditNote: {
         label: "Credit note", title: "CREDIT NOTE", short: "Credit note", noun: "customer",
         party: "Credit to", ship: null,
@@ -115,13 +123,17 @@ const STATUS = {
     refunded:   { label: "Refunded",       tone: "good" },
     dispatched: { label: "Dispatched",     tone: "info" },
     delivered:  { label: "Delivered",      tone: "good" },
-    final:      { label: "Final",          tone: "good" }
+    final:      { label: "Final",          tone: "good" },
+    invoiced:   { label: "Invoiced",       tone: "good" },
+    open:       { label: "Open",           tone: "info" },
+    void:       { label: "Void",           tone: "mute" }
 };
 
 /* Which types a document can be turned into */
 const CONVERSIONS = {
-    quotation:     ["proforma", "invoice"],
+    quotation:     ["salesOrder", "proforma", "invoice"],
     proforma:      ["invoice"],
+    salesOrder:    ["invoice", "deliveryNote", "proforma"],
     invoice:       ["deliveryNote", "creditNote"],
     purchaseOrder: [],
     creditNote:    [],
@@ -221,7 +233,8 @@ const DEFAULT_NUMBERING = {
     creditNote:    { pattern: "CN-{YY}/{M}/{SEQ3}",  next: 1 },
     deliveryNote:  { pattern: "DN-{YY}/{M}/{SEQ3}",  next: 1 },
     letter:        { pattern: "EVAM/{YY}/{SEQ3}",    next: 1 },
-    resolution:    { pattern: "BR-{YYYY}-{SEQ3}",    next: 1 }
+    resolution:    { pattern: "BR-{YYYY}-{SEQ3}",    next: 1 },
+    salesOrder:    { pattern: "SO-{YY}/{M}/{SEQ3}",  next: 1 }
 };
 
 /* ---------- Default terms (from the original invoice form) ---------- */
@@ -238,6 +251,7 @@ const DEFAULT_TERMS = {
     proforma: `<ol><li>Payment in advance by bank transfer to the account shown.</li><li>Goods are released on receipt of cleared funds.</li><li>Bank charges are for the remitter's account.</li></ol>`,
     quotation: `<ol><li>Prices are quoted in the currency shown and exclude VAT unless stated.</li><li>Delivery lead time is confirmed on receipt of a purchase order.</li><li>This quotation is valid until the date shown.</li></ol>`,
     purchaseOrder: `<ol><li>Please quote the PO number on all invoices and delivery documents.</li><li>Goods must match the specification and quantities in this order.</li><li>Invoices are payable according to the payment terms above.</li></ol>`,
+    salesOrder: `<ol><li>Delivery dates are estimates and confirmed on dispatch.</li><li>Prices are as agreed in the quotation referenced above.</li></ol>`,
     creditNote: "",
     deliveryNote: "",
     letter: "",

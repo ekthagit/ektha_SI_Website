@@ -25,7 +25,7 @@ function toast(msg, tone = "", ms = 3200, action = null) {
     const el = document.createElement("div");
     el.className = "toast " + (tone ? "toast-" + tone : "");
     el.setAttribute("role", tone === "bad" ? "alert" : "status");
-    el.innerHTML = `<span>${esc(msg)}</span>`;
+    el.innerHTML = `<span class="toast-ic" aria-hidden="true">${icon(tone === "good" ? "circleCheck" : tone === "bad" ? "alert" : tone === "warn" ? "alert" : "info", 18)}</span><span>${esc(msg)}</span>`;
     if (action) {
         const b = document.createElement("button");
         b.type = "button";
@@ -36,8 +36,8 @@ function toast(msg, tone = "", ms = 3200, action = null) {
     const box = $("#toasts");
     box.appendChild(el);
     while (box.children.length > 3) box.firstChild.remove();
-    requestAnimationFrame(() => el.classList.add("in"));
-    setTimeout(() => { el.classList.remove("in"); setTimeout(() => el.remove(), 250); }, ms);
+    requestAnimationFrame(() => Motion.toastIn(el));
+    setTimeout(() => Motion.toastOut(el, () => el.remove()), ms);
 }
 
 /* ---------- Dialogs ---------- */
@@ -69,6 +69,7 @@ function openDialog({ title, body = "", actions = [{ label: "OK", value: "ok", p
         };
         dlg.returnValue = "";
         dlg.showModal();
+        Motion.pop(dlg);
         if (onOpen) onOpen(inner);
     });
 }
@@ -129,9 +130,15 @@ function showMenu(anchor, items, align = "left") {
 /* ==========================================================
    INIT
    ========================================================== */
-function init() {
-    Store.load();
+async function init() {
+    try { Shell.init(); } catch (e) { console.error(e); }
+    try { await Server.boot(); }
+    catch (e) {
+        document.body.innerHTML = `<div class="boot-error"><h1>EVAM Books can't start</h1><p>${esc(e.message)}</p><p><button onclick="location.reload()">Try again</button></p></div>`;
+        return;
+    }
     initMarks();
+    LiveFX.start();
 
     // Static button labels with icons
     const setBtn = (id, ic, label) => { const b = $("#" + id); if (b) b.innerHTML = `${icon(ic)}<span>${label}</span>`; };
@@ -171,8 +178,20 @@ function init() {
     buildForm();
     renderPreview(true);
     updateDocBar();
+    if (Server.online) Finance.mountNav();
     route();
     window.addEventListener("hashchange", route);
+    // Changes saved by this session or by colleagues: refresh what is on screen
+    Server.on(() => {
+        if (App.view === "documents") renderDocsView();
+        if (App.view === "contacts") renderContactsView();
+        if (App.view === "products") renderProductsView();
+        if (App.view === "finance") Finance.refresh();
+        if (App.view === "create") { renderPayBox(); updateSaveState(); }
+        $("#navDocCount").textContent = Store.data.docs.length || "";
+        LiveFX.start();          // picks up a changed live-rate provider or key
+    });
+    if (Server.online) Finance.mountNav();
     setInterval(updateSaveState, 30000);
 }
 
@@ -185,7 +204,9 @@ function hasContent(doc) {
 /* ---------- Routing ---------- */
 function route() {
     const v = (location.hash || "#create").slice(1);
-    const view = ["create", "documents", "import", "contacts", "products", "settings"].includes(v) ? v : "create";
+    if (typeof HR !== "undefined" && HR.redirect) { const to = HR.redirect(v); if (to) { location.replace(to); return; } }   // HR: self-service sign-ins stay in their own area
+    const ext = Shell.extView(v);
+    const view = v.startsWith("finance") ? "finance" : ext ? ext : ["create", "documents", "import", "contacts", "products", "settings"].includes(v) ? v : "create";
     App.view = view;
     document.body.dataset.view = view;
     if (view !== "create" && $("#markBox")) $("#markBox").hidden = true;
@@ -200,6 +221,8 @@ function route() {
     if (view === "contacts") renderContactsView();
     if (view === "products") renderProductsView();
     if (view === "settings") renderSettings();
+    if (view === "finance") Finance.route(v.slice(8));
+    if (ext) Shell.routeExt(ext, v);
     if (view === "create") {
         if (App._settingsChanged) {
             App._settingsChanged = false;
@@ -212,7 +235,8 @@ function route() {
         renderPreview(true);
         fitZoom();
     }
-    document.title = view === "create" ? `${T().short} ${App.doc.number || ""} · EVAM Documents` : `${view[0].toUpperCase() + view.slice(1)} · EVAM Documents`;
+    if (view !== "finance" && !ext) document.title = view === "create" ? `${T().short} ${App.doc.number || ""} · ${APP_TITLE()}` : `${view[0].toUpperCase() + view.slice(1)} · ${APP_TITLE()}`;
+    Shell.onRoute(view);
 }
 
 /* ---------- Global events ---------- */
@@ -220,7 +244,7 @@ function bindGlobal() {
     $("#typePicker").addEventListener("click", e => openTypeMenu(e.currentTarget));
     $("#newBtn").addEventListener("click", () => startNew(App.doc.type));
     $("#moreBtn").addEventListener("click", e => openMoreMenu(e.currentTarget));
-    $("#saveBtn").addEventListener("click", saveCurrent);
+    $("#saveBtn").addEventListener("click", () => saveCurrent());
     $("#printBtn").addEventListener("click", printCurrent);
     $("#statusSelect").addEventListener("change", e => {
         App.doc.status = e.target.value;
@@ -241,12 +265,8 @@ function bindGlobal() {
         if (b.dataset.pane === "preview") { renderPreview(true); fitZoom(); }
     }));
 
-    $("#fxBtn").addEventListener("click", () => {
-        const to = App.doc.currency === "AED" ? "USD" : App.doc.currency;
-        $("#xeFrame").src = `https://www.xe.com/currencyconverter/fx-widget?amount=1&from=${to}&to=AED&t=${Date.now()}`;
-        $("#fxDialog").showModal();
-    });
-    $("#fxClose").addEventListener("click", () => { $("#fxDialog").close(); $("#xeFrame").src = "about:blank"; });
+    $("#fxBtn").addEventListener("click", () => FXPanel.open());
+    $("#fxClose").addEventListener("click", () => $("#fxDialog").close());
 
     // Documents view
     $("#docsNewBtn").addEventListener("click", e => openTypeMenu(e.currentTarget, true));
@@ -304,11 +324,14 @@ function updateDocBar() {
     const sel = $("#statusSelect");
     const eff = effectiveStatus(App.doc);
     const opts = t.statuses.includes(App.doc.status) ? t.statuses : [App.doc.status, ...t.statuses];
-    sel.innerHTML = opts.map(s => `<option value="${s}">${STATUS[s].label}${s === App.doc.status && eff !== s ? ` · ${STATUS[eff].label.toLowerCase()}` : ""}</option>`).join("");
+    const derived = s => Server.online && App.doc.type === "invoice" && (s === "paid" || s === "partial");
+    sel.innerHTML = opts.map(s => `<option value="${s}"${derived(s) && s !== App.doc.status ? " disabled" : ""}>${STATUS[s].label}${s === App.doc.status && eff !== s ? ` · ${STATUS[eff].label.toLowerCase()}` : ""}${derived(s) && s !== App.doc.status ? " (record a payment)" : ""}</option>`).join("");
+    sel.disabled = Server.online && App.doc.type === "invoice" && (App.doc.status === "paid" || App.doc.status === "partial");
+    sel.title = sel.disabled ? "Paid and part paid follow the payments recorded against this invoice." : "";
     sel.value = App.doc.status;
     sel.dataset.tone = STATUS[effectiveStatus(App.doc)]?.tone || "neutral";
     updateSaveState();
-    if (App.view === "create") document.title = `${t.short} ${App.doc.number || ""} · EVAM Documents`;
+    if (App.view === "create") document.title = `${t.short} ${App.doc.number || ""} · ${APP_TITLE()}`;
 }
 
 function updateSaveState() {
@@ -339,6 +362,7 @@ const TYPE_HINTS = {
     proforma: "Request advance payment before supply",
     quotation: "Offer prices with a validity date",
     purchaseOrder: "Order goods from a vendor",
+    salesOrder: "Confirm a customer's order before invoicing",
     creditNote: "Reduce or refund an invoice",
     deliveryNote: "Goods list without prices, signed on receipt",
     letter: "Letterhead letter, agreement or certificate",
@@ -464,7 +488,7 @@ async function deleteCurrent() {
     const saved = !!Store.getDoc(doc.id);
     const msg = saved ? `Delete ${doc.number}? This cannot be undone.` : "Discard this draft and start again?";
     if (!await confirmDialog(msg, saved ? "Delete" : "Discard", true, saved ? "Delete document" : "Discard draft")) return;
-    if (saved) Store.deleteDoc(doc.id);
+    if (saved && !(await removeDoc(doc.id))) return;
     loadDoc(newDoc(doc.type), false);
     toast(saved ? `Deleted ${doc.number}.` : "Draft discarded.");
 }
@@ -477,7 +501,7 @@ async function convertCurrent(type) {
             actions: [{ label: "Cancel", value: "cancel" }, { label: "Don’t save", value: "skip" }, { label: "Save and continue", value: "ok", primary: true }]
         });
         if (r.value === "cancel") return;
-        if (r.value === "ok" && !saveCurrent()) return;
+        if (r.value === "ok" && !(await saveCurrent())) return;
     }
     const src = App.doc;
     loadDoc(convertDoc(src, type), true);
@@ -635,8 +659,11 @@ function buildForm() {
             html += sectionHTML("money", t.paid ? "Totals & payment" : "Totals", `
 <div class="grid-2">
   ${fieldHTML({ label: "Additional discount", bind: "discount.value", type: "number", kind: "num", addon: `<button type="button" class="addon-toggle" data-act="docDiscType"></button>` })}
-  ${t.paid ? fieldHTML({ label: "Amount received", bind: "paid", type: "number", kind: "num", addon: `<button type="button" class="addon-btn" data-act="markPaid">Paid in full</button>` }) : "<div></div>"}
+  ${t.paid && !Server.online ? fieldHTML({ label: "Amount received", bind: "paid", type: "number", kind: "num", addon: `<button type="button" class="addon-btn" data-act="markPaid">Paid in full</button>` }) : "<div></div>"}
+  ${Server.online && (doc.type === "invoice" || doc.type === "creditNote") ? fieldHTML({ label: "Income account", bind: "incomeAccount", type: "select", options: [["", "Default (" + (Finance.accountName(Store.settings.finance?.defaults?.salesAccount) || "Sales") + ")"], ...Finance.accountOptions(a => a.type === "income")] , hint: "Where these sales are recorded in the accounts." }) : ""}
+  ${Server.online && (doc.type === "invoice" || doc.type === "creditNote") ? fieldHTML({ label: "VAT treatment", bind: "taxTreatment", type: "select", options: [["standard", "Standard (5% / 0% per line)"], ["zero", "Zero-rated (export)"], ["exempt", "Exempt"], ["outOfScope", "Out of scope"]], hint: "Used for the VAT return." }) : ""}
 </div>
+${Server.online && t.paid ? `<div class="pay-box" id="payBox"></div>` : ""}
 <div class="charges">
   <div class="sub-title">Other charges</div>
   <div id="chargesList"></div>
@@ -650,9 +677,10 @@ function buildForm() {
   </div>
 </div>
 <div class="sub-block" data-if="currency!=AED">
+  ${Server.online ? `<div class="grid-2">${fieldHTML({ label: "Exchange rate (AED per 1 unit)", bind: "fx.rate", type: "number", kind: "num", hint: 'Used to record this document in AED in the accounts. <span id="fxLive"></span>' })}</div>` : ""}
   ${checkHTML({ bind: "fx.show", label: "Show AED equivalent", hint: "UAE tax invoices in another currency should also state the VAT amount in AED." })}
-  <div data-if="fx.show" class="grid-2">
-    ${fieldHTML({ label: "Exchange rate", bind: "fx.rate", type: "number", kind: "num", addon: '<span class="addon-text" id="fxAddon"></span>' })}
+  <div data-if="fx.show" class="grid-2"${Server.online ? " hidden" : ""}>
+    ${fieldHTML({ label: "Exchange rate", bind: "fx.rate", type: "number", kind: "num", addon: '<span class="addon-text" id="fxAddon"></span>', hint: Server.online ? "" : '<span id="fxLive"></span>' })}
   </div>
 </div>`, { aside: "&nbsp;" });
         }
@@ -1000,6 +1028,7 @@ function applyConditions() {
 function refreshDerived() {
     const doc = App.doc;
     const t = T();
+    if (Server.online) renderPayBox();
     if (t.text) return;
     const totals = computeTotals(doc);
     const cur = doc.currency;
@@ -1301,6 +1330,12 @@ async function onFormClick(e) {
             break;
         }
         case "docDiscType": doc.discount.type = doc.discount.type === "pct" ? "amt" : "pct"; changed(); break;
+        case "recordPayment": {
+            if (App.dirty || !Store.getDoc(doc.id)) { toast("Save the invoice first.", "warn"); break; }
+            Finance.paymentForm({ invoiceId: doc.id });
+            break;
+        }
+        case "openPayment": Finance.paymentForm({ id: b.dataset.id }); break;
         case "markPaid": {
             if (doc.status === "cancelled") { toast("This invoice is cancelled. Change its status first.", "warn"); break; }
             const due = amountDue(doc);
@@ -1387,14 +1422,38 @@ function onCurrencyChange() {
             if (doc.showBank) toast(`Payment account switched to ${match.label}.`);
         }
     }
-    if (doc.currency === "USD" && !num(doc.fx.rate)) {
-        doc.fx.rate = 3.6725;
-        const r = $(`[data-bind="fx.rate"]`);
-        if (r) r.value = 3.6725;
-    }
+    // The exchange rate follows the currency: pegged, live or the book rate
+    // Never keep the previous currency's rate: use this currency's, or leave it empty to be filled in
+    const rate = doc.currency === "AED" ? "" : LiveFX.rate(doc.currency) || "";
+    doc.fx.rate = rate;
+    $$(`[data-bind="fx.rate"]`).forEach(r => { r.value = rate; });
+    if (doc.currency !== "AED" && !rate) toast(`Enter the exchange rate for ${doc.currency} (AED per 1 ${doc.currency}).`, "warn", 6000);
+    refreshFxAddon();
     renderItems();
     renderCharges();
 }
+
+/* Live rate next to the exchange rate field, with one click to use it */
+function refreshFxAddon() {
+    const doc = App.doc;
+    $$("#fxLive").forEach(el => {
+        if (!doc || doc.currency === "AED") { el.innerHTML = ""; return; }
+        const live = LiveFX.live(doc.currency);
+        if (!live) { el.innerHTML = LiveFX.config().provider === "off" ? "" : `<span class="muted">Live rate: waiting…</span>`; return; }
+        const same = Math.abs(num(doc.fx.rate) - live) < 0.0000005;
+        el.innerHTML = `<span class="fx-live ${LiveFX.status === "live" ? "on" : ""}">${LiveFX.status === "live" ? "Live" : "Reference"} ${fmtRate(live)}</span>${same ? "" : ` <button type="button" class="link-btn" data-act="useLiveFx">Use it</button>`}`;
+    });
+}
+document.addEventListener("click", e => {
+    if (!e.target.closest('[data-act="useLiveFx"]') || !App.doc) return;
+    const r = LiveFX.live(App.doc.currency);
+    if (!r) return;
+    App.doc.fx.rate = r;
+    $$(`[data-bind="fx.rate"]`).forEach(i => { i.value = r; });
+    changed();
+    refreshFxAddon();
+});
+LiveFX.onChange(() => { if (App.view === "create") refreshFxAddon(); });
 
 /* Called after any edit */
 const renderPreviewSoon = debounce(() => requestAnimationFrame(() => renderPreview()), 90);
@@ -1577,6 +1636,10 @@ function validate(doc, forPrint = false) {
             ? ["line:" + doc.items[0].id, (t.prices ? "Type an item name or a rate in line 1." : "Type an item name in line 1.")]
             : [null, "Add at least one line item."]);
     }
+    if (t.prices && doc.items.some(i => num(i.qty) < 0 || num(i.rate) < 0)) {
+        const bad = doc.items.find(i => num(i.qty) < 0 || num(i.rate) < 0);
+        problems.push(["line:" + bad.id, "Quantities and rates can't be negative. For returns or refunds, use a credit note."]);
+    }
     if (Store.numberTaken(doc)) problems.push(["number", `${doc.number} is already used by another ${t.label.toLowerCase()}.`]);
     return problems;
 }
@@ -1641,7 +1704,17 @@ function refreshAutoNumber() {
     if (el) el.value = doc.number;
 }
 
-function saveCurrent() {
+/* A quotation, proforma or sales order that has become an invoice says so */
+function markSourceConverted(doc) {
+    if (doc.type !== "invoice" || !doc.sourceId) return;
+    const src = Store.getDoc(doc.sourceId);
+    if (!src) return;
+    const next = { quotation: "accepted", proforma: "accepted", salesOrder: "invoiced" }[src.type];
+    if (!next || src.status === next || ["cancelled", "declined"].includes(src.status)) return;
+    try { Store.saveDoc({ ...JSON.parse(JSON.stringify(src)), status: next }); } catch { /* the invoice is saved either way */ }
+}
+
+async function saveCurrent() {
     const doc = App.doc;
     refreshAutoNumber();
     if (dropBlankLines(doc)) { renderItems(); changed(); }
@@ -1650,10 +1723,64 @@ function saveCurrent() {
     $$(".field.invalid, .line.invalid").forEach(f => f.classList.remove("invalid"));
     const wasNew = !Store.getDoc(doc.id);
     const oldNumber = doc.number;
+    // A credit note reduces the invoice it names; say so when that invoice can't be found for this customer
+    if (doc.type === "creditNote" && doc.status !== "cancelled" && String(doc.ref || "").trim()) {
+        const same = s2 => String(s2 || "").trim().toLowerCase();
+        const inv = Store.data.docs.find(d => d.type === "invoice" && same(d.number) === same(doc.ref));
+        doc.unlinked = false;
+        if (!inv || same(inv.party?.name) !== same(doc.party?.name) || (inv.currency || "AED") !== (doc.currency || "AED")) {
+            const why = !inv ? `There is no invoice ${doc.ref}.` : same(inv.party?.name) !== same(doc.party?.name) ? `Invoice ${doc.ref} is for ${inv.party?.name}, not ${doc.party?.name || "this customer"}.` : `Invoice ${doc.ref} is in ${inv.currency}, this credit note in ${doc.currency}.`;
+            const ok = await confirmDialog(`${why} The credit note will be kept as credit for ${doc.party?.name || "the customer"} (it lowers what they owe overall, not one invoice).`, "Save as customer credit", false, "Invoice not matched");
+            if (!ok) return false;
+            doc.unlinked = true;     // kept as credit for the customer, not set against that invoice
+        }
+    }
+    if (Server.online) {
+        if (App._saving) return false;
+        App._saving = true;
+        const btn = $("#saveBtn");
+        btn.disabled = true;
+        try {
+            const res = await Server.save("doc", { ...doc, savedAt: Date.now() });
+            const savedDoc = res.object;
+            // Keep anything typed while the save was on its way
+            const typedSince = App.doc !== doc || App.doc.updatedAt > (doc.updatedAt || 0);
+            if (!typedSince) App.doc = upgradeDoc(JSON.parse(JSON.stringify(savedDoc)));
+            else Object.assign(App.doc, { number: savedDoc.number, seq: savedDoc.seq, status: savedDoc.status, paid: savedDoc.paid, credited: savedDoc.credited, balanceDue: savedDoc.balanceDue });
+            App.dirty = typedSince;
+        } catch (e) {
+            if (e.offline) {
+                Store.saveDoc(doc);   // queued: sent when the connection is back
+                App.dirty = false;
+                toast("You're offline. Saved on this device; it will be sent to EVAM Books when you're back online.", "warn", 7000);
+                updateDocBar(); return true;
+            }
+            if (e.status === 409 && e.data?.current) {
+                const r = await openDialog({ title: "Changed by someone else", body: `<p class="dialog-text">${esc(e.message)}</p>`, actions: [{ label: "Cancel", value: "cancel" }, { label: "Load their version", value: "load" }, { label: "Overwrite with mine", value: "mine", danger: true }] });
+                if (r.value === "load") { Server.apply(e.data.current); loadDoc(JSON.parse(JSON.stringify(e.data.current)), false); }
+                if (r.value === "mine") { Server.versions.set(doc.id, e.data.current.version); App._saving = false; btn.disabled = false; return saveCurrent(); }
+            } else toast(e.message, "bad", 8000);
+            return false;
+        } finally { App._saving = false; btn.disabled = false; }
+        Store.saveDraft(App.doc);
+        if (wasNew) markSourceConverted(App.doc);
+        const numberEl = $(`[data-bind="number"]`);
+        if (numberEl) numberEl.value = App.doc.number;
+        if (wasNew && App.doc.number !== oldNumber && !doc.auto) toast(`Saved as ${App.doc.number}.`, "warn", 6000);
+        else {
+            const note = unnamedLinesNote(App.doc);
+            toast(`${wasNew ? "Saved" : "Updated"} ${App.doc.number}.${note}`, note ? "warn" : "good", note ? 5000 : undefined);
+        }
+        buildFormKeepScroll();
+        renderPreview();
+        updateDocBar();
+        return true;
+    }
     if (!Store.saveDoc(doc)) return false;
     App.doc = upgradeDoc(JSON.parse(JSON.stringify(Store.getDoc(doc.id))));
     App.dirty = false;
     Store.saveDraft(App.doc);
+    if (wasNew) markSourceConverted(App.doc);
     if (App.doc.number !== oldNumber) {
         const n = $(`[data-bind="number"]`);
         if (n) n.value = App.doc.number;
@@ -1743,8 +1870,8 @@ function renderLedgerStrip() {
     const overdue = sumBy(overdueList, d => invoiceBalance(d));
     // Money received this month: payments recorded this month (older records fall back to the invoice date)
     const receivedIn = d => (d.paidAt ? isoOf(new Date(d.paidAt)) : d.date || "").slice(0, 7) === month;
-    const receivedList = invoices.filter(d => d.status !== "cancelled" && num(d.paid) > 0 && receivedIn(d));
-    const paidMonth = sumBy(receivedList, d => Math.min(num(d.paid), computeTotals({ ...d, paid: 0 }).total));
+    const receivedList = Server.online ? Server.fin.payment.filter(p => (p.date || "").slice(0, 7) === month) : invoices.filter(d => d.status !== "cancelled" && num(d.paid) > 0 && receivedIn(d));
+    const paidMonth = Server.online ? sumBy(receivedList, p => num(p.amount)) : sumBy(receivedList, d => Math.min(num(d.paid), computeTotals({ ...d, paid: 0 }).total));
     const quotes = docs.filter(d => d.type === "quotation" && ["draft", "sent"].includes(d.status) && effectiveStatus(d) !== "expired");
     const quoted = sumBy(quotes, d => computeTotals(d).total);
     const money = (m) => {
@@ -1836,7 +1963,9 @@ function docRowMenu(anchor, id) {
         { label: "Duplicate", icon: "copy", onClick: async () => { if (await openSaved(id)) duplicateCurrent(); } }
     ];
     (CONVERSIONS[d.type] || []).forEach(k => items.push({ label: `Create ${DOC_TYPES[k].label.toLowerCase()}`, icon: "swap", onClick: async () => { if (await openSaved(id)) convertCurrent(k); } }));
-    if (t.paid && !["paid", "cancelled"].includes(d.status) && invoiceBalance(d) > 0) items.push({ label: "Mark as paid", icon: "check", onClick: () => {
+    if (Server.online && t.paid && d.status !== "cancelled" && invoiceBalance(d) > 0 && Server.can("sales")) items.push({ label: "Record payment", icon: "check", onClick: () => Finance.paymentForm({ invoiceId: d.id }) });
+    if (Server.online && d.type === "purchaseOrder" && Server.can("purchases")) items.push({ label: "Create bill", icon: "swap", onClick: () => Finance.billFromPO(d) });
+    if (!Server.online && t.paid && !["paid", "cancelled"].includes(d.status) && invoiceBalance(d) > 0) items.push({ label: "Mark as paid", icon: "check", onClick: () => {
         d.paid = amountDue(d); d.status = "paid"; d.paidAt = Date.now(); Store.saveDoc(d);
         if (App.doc.id === id) {
             // Keep any unsaved edits in the editor; only the payment fields change
@@ -1853,7 +1982,7 @@ function docRowMenu(anchor, id) {
     } });
     items.push({ divider: true }, { label: "Delete", icon: "trash", danger: true, onClick: async () => {
         if (!await confirmDialog(`Delete ${d.number}? This cannot be undone.`, "Delete", true, "Delete document")) return;
-        Store.deleteDoc(id);
+        if (!(await removeDoc(id))) return;
         if (App.doc.id === id) loadDoc(newDoc(d.type), false);
         renderDocsView(); updateSaveState(); toast(`Deleted ${d.number}.`);
     } });
@@ -2539,4 +2668,64 @@ function initMarks() {
         e.preventDefault();
         paintMark(MarkUI.sel); syncMarkControls(); placeMarkBox(); changed();
     });
+}
+
+
+/* ==========================================================
+   EVAM BOOKS HOOKS
+   ========================================================== */
+const APP_TITLE = () => (Server.online ? "EVAM Books" : "EVAM Documents");
+
+function buildFormKeepScroll() {
+    const pane = $("#formPane");
+    const top = pane.scrollTop;
+    buildForm();
+    pane.scrollTop = top;
+}
+
+/* Delete a document: on the server it can be refused (e.g. payments recorded against it) */
+async function removeDoc(id) {
+    if (!Server.online) { Store.deleteDoc(id); return true; }
+    try { await Server.remove("doc", id); return true; }
+    catch (e) { toast(e.message, "bad", 8000); return false; }
+}
+
+/* Payments recorded against the open invoice */
+function renderPayBox() {
+    const box = $("#payBox");
+    if (!box) return;
+    const doc = App.doc;
+    const saved = Store.getDoc(doc.id);
+    const pays = Server.fin.payment.filter(p => (p.allocations || []).some(a => a.docId === doc.id));
+    const cur = doc.currency;
+    const total = computeTotals({ ...doc, paid: 0 }).total;
+    const bal = invoiceBalance(doc);
+    const rows = pays.map(p => {
+        const a = p.allocations.find(x => x.docId === doc.id);
+        return `<li><button type="button" class="link-btn" data-act="openPayment" data-id="${p.id}">${esc(p.number || "Payment")}</button><span class="muted">${fmtDate(p.date)} · ${esc(Finance.accountName(p.accountId) || "")}</span><span class="num">${esc(cur)} ${fmt(a.amount, cur)}</span></li>`;
+    }).join("");
+    const credits = num(doc.credited) ? `<li><span>Credit notes</span><span class="muted"></span><span class="num">${esc(cur)} ${fmt(doc.credited, cur)}</span></li>` : "";
+    box.innerHTML = `
+<div class="pay-head"><b>Payments</b><span class="pay-bal ${bal > 0 ? "due" : "clear"}">${doc.status === "cancelled" ? "Cancelled" : bal > 0 ? `Balance due ${esc(cur)} ${fmt(bal, cur)}` : total > 0 ? "Fully paid" : ""}</span></div>
+${rows || credits ? `<ul class="pay-list">${rows}${credits}</ul>` : `<p class="muted pay-none">No payments recorded yet.</p>`}
+${Server.can("sales") && doc.status !== "cancelled" && bal > 0 ? `<button type="button" class="btn btn-ghost btn-sm" data-act="recordPayment"${!saved || App.dirty ? ' disabled title="Save the invoice first"' : ""}>${icon("plus", 14)}<span>Record payment</span></button>${!saved || App.dirty ? '<span class="hint">Save the invoice first.</span>' : ""}` : ""}`;
+}
+
+/* Someone else changed the document that is open */
+function onRemoteChange(o) {
+    if (App.view !== "create" || !App.doc || o.id !== App.doc.id) { if (App.view === "documents") renderDocsView(); return; }
+    if (o.deleted) { toast(`${App.doc.number} was deleted by someone else.`, "warn", 8000); return; }
+    if (App.dirty) { toast(`${App.doc.number} was changed by someone else. Saving will ask which version to keep.`, "warn", 8000); return; }
+    loadDoc(JSON.parse(JSON.stringify(Store.getDoc(o.id) || o)), false);
+    toast(`${App.doc.number} was updated by someone else.`, "", 5000);
+}
+
+/* After signing in again, or after uploading browser data */
+function onSignedIn() {
+    refreshLists();
+    if (App.doc && !Store.getDoc(App.doc.id) && !hasContent(App.doc)) App.doc = newDoc(App.doc.type);
+    buildForm();
+    renderPreview(true);
+    updateDocBar();
+    route();
 }
