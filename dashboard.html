@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>Dashboard | EVAM</title>
+</head>
+
+<body>
+    <main>
+        <h1>EVAM Dashboard</h1>
+
+        <p id="welcome">Checking your session...</p>
+
+        <button id="logoutButton" hidden>
+            Sign out
+        </button>
+    </main>
+
+    <script type="module">
+        import { supabase } from "./js/supabase.js";
+
+        const welcome = document.getElementById("welcome");
+        const logoutButton = document.getElementById("logoutButton");
+
+        async function initializeDashboard() {
+            const { data, error } = await supabase.auth.getUser();
+
+            if (error || !data.user) {
+                window.location.replace("/login.html");
+                return;
+            }
+
+            const user = data.user;
+
+            const { data: profile, error: profileError } =
+                await supabase
+                    .from("profiles")
+                    .select("username")
+                    .eq("id", user.id)
+                    .maybeSingle();
+
+            if (profileError) {
+                console.error("Profile error:", profileError);
+            }
+
+            welcome.textContent = profile?.username
+                ? `Welcome, ${profile.username}!`
+                : `Welcome, ${user.email}!`;
+
+            logoutButton.hidden = false;
+        }
+
+        logoutButton.addEventListener("click", async () => {
+            logoutButton.disabled = true;
+
+            const { error } = await supabase.auth.signOut();
+
+            if (error) {
+                console.error("Logout error:", error);
+                welcome.textContent = "Unable to sign out. Please try again.";
+                logoutButton.disabled = false;
+                return;
+            }
+
+            window.location.replace("/login.html");
+        });
+
+        initializeDashboard();
+    </script>
+</body>
+</html>
