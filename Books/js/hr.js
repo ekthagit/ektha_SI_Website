@@ -14,6 +14,53 @@ if (typeof ICON_PATHS !== "undefined") Object.assign(ICON_PATHS, {
     download2: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>'
 });
 
+let supabase_profile = null;
+let profileLoaded = false;
+
+async function loadUserProfile() {
+    try {
+        const { supabase } = await import("../../js/supabase.js");
+
+        const {
+            data: { user },
+            error: authError
+        } = await supabase.auth.getUser();
+
+        if (authError || !user) {
+            console.error("User is not logged in:", authError);
+            supabase_profile = null;
+            return null;
+        }
+
+        const { data, error } = await supabase
+            .from("profiles")
+            .select("*")
+            .eq("id", user.id)
+            .single();
+
+        if (error) {
+            console.error("Error fetching profile:", error);
+            supabase_profile = null;
+            return null;
+        }
+
+        supabase_profile = data;
+
+        console.log("Supabase role:", supabase_profile.roles);
+
+        return supabase_profile;
+
+    } catch (error) {
+        console.error("Failed to load Supabase profile:", error);
+        supabase_profile = null;
+        return null;
+
+    } finally {
+        profileLoaded = true;
+    }
+}
+
+
 const HR = {
     cfg: null,           // GET hr/config: settings, perms, me, today
     _uid: null, _loading: null, sub: "", sec: null,
@@ -60,14 +107,23 @@ const HR = {
         this.settingsTab();
         Bell.paint();
     },
-    registerNav() {
+    async registerNav() {
         if (typeof Shell === "undefined") return;
+
+        // Wait until the Supabase profile has loaded
+        if (!profileLoaded) {
+            await loadUserProfile();
+        }
+
         const exact = h => x => x === h || x.startsWith(h + "?");
-        const M = () => this.canManage(), ME = () => this.isStaff();
+        // const M = () => this.canManage(), ME = () => this.isStaff();
+        const ME = () => this.isStaff();
+        const M = isAdmin = () => supabase_profile?.roles?.includes("admin");
+
         const pend = () => this.cfg && this.cfg.pending ? this.cfg.pending : "";
         Shell.registerNavGroup({ id: "hr", label: "HR", order: 10, items: [
             { href: "#hr", label: "Dashboard", icon: "dashboard", perm: M, match: exact("#hr") },
-            { href: "#hr/employees", label: "Employees", icon: "idCard", perm: M, hint: "Everyone on the team, their HR details and sign-ins" },
+            { href: "#hr/employees", label: "Employees", icon: "idCard", perm: isAdmin, hint: "Everyone on the team, their HR details and sign-ins" },
             { href: "#hr/attendance", label: "Attendance", icon: "clock", perm: M, hint: "Clock-ins, late arrivals and corrections" },
             { href: "#hr/leave", label: "Leave requests", icon: "plane", perm: M, hint: "Approve or decline time off", badge: pend },
             { href: "#hr/calendar", label: "Team calendar", icon: "calendarDays", perm: M, hint: "Who is away, month by month" },
@@ -638,8 +694,7 @@ const Bell = {
 window.HRBell = Bell;
 
 /* ---------- Wiring into the shell ---------- */
-(() => {
-    HR.registerNav();
+(async () => {
     if (typeof Shell !== "undefined") Shell.registerView("hr", (sub, sec) => HR.route(sub, sec));
     if (typeof Shell !== "undefined") Shell.registerCommand({ group: "Create", label: "Clock in or out", hint: "My day", icon: "clock", keywords: "attendance punch time", perm: () => HR.isStaff(), run: () => { location.hash = "#hr/me"; } });
     if (typeof Shell !== "undefined") Shell.registerCommand({ group: "Create", label: "Request leave", hint: "Time off", icon: "plane", keywords: "holiday vacation sick", perm: () => HR.isStaff(), run: () => { location.hash = "#hr/my-leave"; setTimeout(() => $("#hrApply")?.click(), 250); } });
@@ -654,4 +709,6 @@ window.HRBell = Bell;
             if (App.settingsTab === "hr") HR.renderSettingsTab($("#settingsBody"));
         };
     }
+
+    await HR.registerNav();
 })();

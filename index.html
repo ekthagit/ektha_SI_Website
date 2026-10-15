@@ -9,6 +9,83 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;500;600;700&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="styles.css">
+<style>
+  /* Navigation */
+.links {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+}
+
+/* Dropdown container */
+.nav-dropdown {
+    position: relative;
+}
+
+/* Dropdown button */
+.dropdown-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    padding: 8px 0;
+}
+
+/* Arrow */
+.arrow {
+    font-size: 12px;
+    transition: transform 0.2s ease;
+}
+
+/* Dropdown menu */
+.dropdown-menu {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: -16px;
+    min-width: 190px;
+    padding: 8px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+    z-index: 1000;
+}
+
+/* Dropdown links */
+.dropdown-menu a {
+    display: block;
+    padding: 11px 12px;
+    color: #333333;
+    text-decoration: none;
+    border-radius: 6px;
+    white-space: nowrap;
+}
+
+/* Hover effect */
+.dropdown-menu a:hover {
+    background: #f3f4f6;
+}
+
+/* Show dropdown on hover */
+.nav-dropdown:hover .dropdown-menu {
+    display: block;
+}
+
+/* Keyboard accessibility */
+.nav-dropdown:focus-within .dropdown-menu {
+    display: block;
+}
+
+/* Rotate arrow on hover */
+.nav-dropdown:hover .arrow {
+    transform: rotate(180deg);
+}
+</style>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -24,12 +101,26 @@
       <div><b>EVAM</b><span>SUPER INTELLIGENCE</span></div>
     </a>
     <nav class="links" aria-label="Pages">
-      <a href="index.html" aria-current="page">Home</a>
-      <a href="trading.html">Trading</a>
-      <a href="business.html">Business</a>
-      <a href="method.html">Method</a>
-      <a href="contact.html">Contact</a>
-    </nav>
+    <a href="index.html" aria-current="page">Home</a>
+    <a href="trading.html">Trading</a>
+    <a href="business.html">Business</a>
+
+    <!-- Products Dropdown -->
+    <div class="nav-dropdown">
+        <button class="dropdown-toggle" aria-expanded="false">
+            Products <span class="arrow">▾</span>
+        </button>
+
+        <div class="dropdown-menu">
+          <a href="Books/index.html" id="booksLink">Books</a>
+            <a href="product2.html">Kiln</a>
+            <a href="product3.html">Reel</a>
+        </div>
+    </div>
+
+    <a href="method.html">Method</a>
+    <a href="contact.html">Contact</a>
+</nav>
   </div>
 </header>
 <div class="tape" id="tvTape" aria-label="Live market prices"></div>
@@ -68,5 +159,23 @@
   </div>
 </footer>
 <script src="app.js"></script>
+<script type="module">
+    import { supabase } from "./js/supabase.js";
+
+    const booksLink = document.getElementById("booksLink");
+
+    booksLink.addEventListener("click", async function (event) {
+        event.preventDefault();
+
+        const { data, error } = await supabase.auth.getSession();
+
+        if (error || !data.session) {
+            window.location.href = "/login.html";
+            return;
+        }
+
+        window.location.href = "/Books/index.html";
+    });
+</script>
 </body>
 </html>

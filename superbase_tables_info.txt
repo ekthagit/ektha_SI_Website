@@ -1,0 +1,151 @@
+-- Create a profiles table linked to Supabase Auth
+CREATE TABLE public.profiles (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    username TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Ensure usernames are unique, ignoring uppercase/lowercase differences
+CREATE UNIQUE INDEX profiles_username_unique
+ON public.profiles (LOWER(username));
+
+-- Enable Row Level Security
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+
+-- Remove default client permissions
+REVOKE ALL ON TABLE public.profiles FROM anon, authenticated;
+
+-- Allow signed-in users to read and update their own profiles
+GRANT SELECT, UPDATE ON TABLE public.profiles TO authenticated;
+
+CREATE POLICY "Users can view their own profile"
+ON public.profiles
+FOR SELECT
+TO authenticated
+USING (auth.uid() = id);
+
+CREATE POLICY "Users can update their own profile"
+ON public.profiles
+FOR UPDATE
+TO authenticated
+USING (auth.uid() = id)
+WITH CHECK (auth.uid() = id);
+
+-- Automatically create a profile when a user registers
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+    INSERT INTO public.profiles (id, username)
+    VALUES (
+        NEW.id,
+        NEW.raw_user_meta_data ->> 'username'
+    );
+
+    RETURN NEW;
+END;
+$$;
+
+-- Attach the function to Supabase Auth
+CREATE TRIGGER on_auth_user_created
+AFTER INSERT ON auth.users
+FOR EACH ROW
+EXECUTE FUNCTION public.handle_new_user();
+
+
+
+===============
+
+
+ALTER TABLE public.profiles
+ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user';
+
+ALTER TABLE public.profiles
+ADD CONSTRAINT profiles_role_check
+CHECK (role IN ('user', 'admin'));
+
+
+===================
+
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+    v_username TEXT;
+BEGIN
+    v_username := COALESCE(
+        NULLIF(NEW.raw_user_meta_data ->> 'username', ''),
+        split_part(NEW.email, '@', 1)
+            || '_'
+            || left(replace(NEW.id::text, '-', ''), 6)
+    );
+
+    INSERT INTO public.profiles (
+        id,
+        username,
+        role
+    )
+    VALUES (
+        NEW.id,
+        v_username,
+        'user'
+    );
+
+    RETURN NEW;
+END;
+$$;
+
+
+===============
+
+
+DO $$
+DECLARE
+    v_user_id UUID;
+    v_email TEXT := 'admin@evam.si';
+BEGIN
+    SELECT id
+    INTO v_user_id
+    FROM auth.users
+    WHERE LOWER(email) = LOWER(v_email);
+
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION
+            'User % does not exist in Supabase Auth. Create the account first.',
+            v_email;
+    END IF;
+
+    INSERT INTO public.profiles (
+        id,
+        username,
+        role
+    )
+    VALUES (
+        v_user_id,
+        'finance',
+        'finance'
+    )
+    ON CONFLICT (id)
+    DO UPDATE SET
+        role = 'admin',
+        updated_at = NOW();
+END $$;
+
+
+
+
+UPDATE public.profiles
+SET roles = ARRAY['admin', 'finance', 'employee']
+WHERE id = '1b98aa29-8286-4ddb-8de5-68221c427bef';
+
+
+UPDATE public.profiles
+SET roles = ARRAY['employee'], main_role = "employee"
+WHERE id = '6894e120-ebb7-4ee0-9f1e-f5b6651f4ffa';

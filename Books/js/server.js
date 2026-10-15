@@ -486,7 +486,7 @@ const Auth = {
     },
     openUserMenu(anchor) {
         showMenu(anchor, [
-            { heading: `${Server.user.name} · ${Server.roles[Server.user.role] || Server.user.role}` },
+            { heading: `${Server.user.name} · ${Server.roles[Server.user.role] || Server.user.role} ::: ${supabase_profile?.username} ::: ${supabase_profile?.roles}` },
             { label: Server.user.mfa ? "Two-step sign-in: on" : "Turn on two-step sign-in", icon: "check", onClick: () => TwoFA.dialog() },
             { label: "Change password", icon: "pen", onClick: () => changePasswordDialog() },
             { divider: true },
