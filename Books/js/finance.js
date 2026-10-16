@@ -320,6 +320,17 @@ const Finance = {
     },
     drawDashboard() {
         const d = this._dash, main = $("#finMain");
+        if (!d || !main) return;
+        // Keep the dashboard resilient when an API response omits optional fields.
+        d.trend = Array.isArray(d.trend) ? d.trend : [];
+        d.cash = Array.isArray(d.cash) ? d.cash : [];
+        d.topDebtors = Array.isArray(d.topDebtors) ? d.topDebtors : [];
+        d.expenses = { thisMonth: 0, lastMonth: 0, top: [], others: 0, ...(d.expenses || {}) };
+        d.expenses.top = Array.isArray(d.expenses.top) ? d.expenses.top : [];
+        d.receivables = { total: 0, count: 0, overdue: 0, overdueCount: 0, advances: 0, ...(d.receivables || {}) };
+        d.payables = { total: 0, count: 0, overdue: 0, overdueCount: 0, dueSoon: [], ...(d.payables || {}) };
+        d.payables.dueSoon = Array.isArray(d.payables.dueSoon) ? d.payables.dueSoon : [];
+        d.thisMonth = { income: 0, expense: 0, profit: 0, ...(d.thisMonth || {}) };
         const animate = !!this._dashAnimate; this._dashAnimate = false;
         const cur = this.dashCur();
         const rate = cur === "AED" ? 1 : num(LiveFX.rate(cur));

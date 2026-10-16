@@ -21,9 +21,77 @@ const Server = {
     busy: false,
     listeners: new Set(),
     _settingsJSON: "",
+    supabase: null,
+    profile: null,
+
+    async getSupabase() {
+        if (!this.supabase) {
+            const module = await import("../../js/supabase.js");
+            this.supabase = module.supabase;
+        }
+        return this.supabase;
+    },
 
     /* ---------- HTTP ---------- */
     async api(method, path, body, opts = {}) {
+        // Route HR, dashboard, Banking and Administration APIs through the authenticated Supabase Edge Function.
+        // Core books_records persistence remains directly on Supabase below.
+        const normalizedPath = String(path).replace(/^\/+/, "");
+        const routeRoot = normalizedPath.split(/[/?#]/, 1)[0];
+        const useSupabaseFunction =
+            normalizedPath.startsWith("hr/") ||
+            normalizedPath === "bank/balances" ||
+            normalizedPath.startsWith("reports/") ||
+            ["users", "security", "audit", "reminders"].includes(routeRoot);
+
+        if (useSupabaseFunction) {
+            const sb = await this.getSupabase();
+            const { data: { session }, error: sessionError } = await sb.auth.getSession();
+            if (sessionError) throw sessionError;
+            if (!session?.access_token) {
+                const error = new Error("Please sign in to access this section.");
+                error.status = 401;
+                throw error;
+            }
+
+            const functionUrl = `${sb.supabaseUrl}/functions/v1/evam-api/${normalizedPath}`;
+            const headers = {
+                apikey: sb.supabaseKey,
+                Authorization: `Bearer ${session.access_token}`
+            };
+            if (!opts.raw) headers["Content-Type"] = "application/json";
+            else headers["Content-Type"] = opts.type || "application/octet-stream";
+
+            let response;
+            try {
+                response = await fetch(functionUrl, {
+                    method,
+                    headers,
+                    body: body === undefined ? undefined : (opts.raw ? body : JSON.stringify(body))
+                });
+            } catch (error) {
+                const err = new Error("Could not connect to the Supabase API.");
+                err.cause = error;
+                throw err;
+            }
+
+            const responseText = await response.text();
+            let data;
+            try { data = responseText ? JSON.parse(responseText) : null; }
+            catch { data = { error: responseText || "Invalid response from Supabase." }; }
+
+            if (!response.ok) {
+                const error = new Error(data?.error || `Supabase API returned HTTP ${response.status}.`);
+                error.status = response.status;
+                error.data = data;
+                if (response.status === 401 && !opts.noAuthRedirect) {
+                    const { data: current } = await sb.auth.getSession();
+                    if (!current?.session) location.replace("../login.html");
+                }
+                throw error;
+            }
+            return data;
+        }
         let res;
         try {
             res = await fetch(this.base + path, {
@@ -53,36 +121,94 @@ const Server = {
 
     /* ---------- Start-up ---------- */
     async detect() {
-        if (!/^https?:$/.test(location.protocol)) return false;
-        try {
-            const r = await fetch(this.base + "status", { credentials: "same-origin" });
-            if (!r.ok) return false;
-            const s = await r.json();
-            return s && s.app ? s : false;
-        } catch { return false; }
+        return { app: "supabase" };
     },
 
     /* Returns once the user is signed in and the data is loaded (or in local mode) */
     async boot() {
-        const status = await this.detect();
-        if (!status) { this.online = false; Store.load(); return; }
-        this.online = true;
-        document.body.classList.add("online");
-        if (status.setupNeeded) await Auth.run("setup");
-        else if (!status.signedIn) await Auth.run(status.mfaPending ? "mfa" : "login");
-        await this.loadAll();
-        await Auth.gateChecks();
+        try {
+            const supabase = await this.getSupabase();
+            const { data: { session }, error } = await supabase.auth.getSession();
+            if (error) throw error;
+            if (!session) {
+                location.replace("../login.html");
+                return;
+            }
+
+            this.online = true;
+            document.body.classList.add("online");
+            this.user = {
+                id: session.user.id,
+                email: session.user.email,
+                name: session.user.user_metadata?.username ||
+                      session.user.user_metadata?.full_name ||
+                      session.user.email,
+                role: "user",
+                mfa: false
+            };
+
+            const { data: profile, error: profileError } = await supabase
+                .from("profiles")
+                .select("id, username, main_role, roles")
+                .eq("id", session.user.id)
+                .maybeSingle();
+
+            if (profileError) throw profileError;
+            if (!profile) {
+                throw new Error("Your Supabase profile was not found. Ask your administrator to create it.");
+            }
+
+            this.profile = profile;
+            this.user.name = profile.username || this.user.name;
+            this.user.role = profile.main_role || "user";
+            this.roles = Array.isArray(profile.roles)
+                ? Object.fromEntries(profile.roles.map(r => [r, r]))
+                : (profile.roles || {});
+            this.role = { read: "*", write: "*", reports: "*" };
+
+            await this.loadAll();
+            await Auth.gateChecks();
+
+            supabase.auth.onAuthStateChange((event, currentSession) => {
+                if (event === "SIGNED_OUT" || !currentSession) {
+                    location.replace("../login.html");
+                }
+            });
+        } catch (error) {
+            console.error("Supabase startup failed:", error);
+            toast(error.message || "Unable to connect to Supabase.", "bad", 9000);
+        }
     },
 
     async loadAll() {
-        let b;
-        try { b = await this.get("bootstrap"); }
-        catch (e) {
-            if (e.data && (e.data.mustChange || e.data.need2fa)) { await Auth.handleGate(e.data, true); return this.loadAll(); }
-            if (e.offline) { if (this.loadCache()) { toast("You're offline. Showing the last copy saved on this device.", "warn", 7000); return; } }
-            throw e;
+        const supabase = await this.getSupabase();
+        const { data: rows, error } = await supabase
+            .from("books_records")
+            .select("id, record_type, record_key, data, updated_at")
+            .eq("user_id", this.user.id);
+        if (error) throw error;
+
+        this.fin = Object.fromEntries(FIN_KINDS.map(k => [k, []]));
+        this.versions.clear();
+        const raw = { settings: null, docs: [], contacts: [], products: [], migrated: true };
+
+        for (const row of (rows || [])) {
+            const value = { ...(row.data || {}), id: row.record_key, kind: row.record_type };
+            this.versions.set(row.record_key, row.updated_at);
+            if (row.record_type === "settings") raw.settings = value;
+            else if (row.record_type === "doc") raw.docs.push(value);
+            else if (row.record_type === "contact") raw.contacts.push(value);
+            else if (row.record_type === "product") raw.products.push(value);
+            else if (this.fin[row.record_type]) this.fin[row.record_type].push(value);
         }
-        this.applyBootstrap(b);
+
+        if (!raw.settings) raw.settings = Store.normalise({}).settings;
+        raw.docs.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        Store.data = Store.normalise(raw);
+        this._settingsJSON = JSON.stringify(Store.data.settings);
+        this.saveCache();
+        Auth.renderUserMenu();
+        this.emit();
     },
 
     applyBootstrap(b) {
@@ -153,22 +279,41 @@ const Server = {
 
     /* Save now and wait for the answer (used by Save buttons) */
     async save(kind, obj, { force = false } = {}) {
+        const supabase = await this.getSupabase();
         const body = JSON.parse(JSON.stringify(obj));
-        body.version = this.versions.get(obj.id) ?? null;
-        if (force) body.force = true;
-        delete body.kind;
-        const res = await this.api("PUT", `objects/${kind}/${encodeURIComponent(obj.id)}`, body);
-        this.applyResult(res);
-        return res;
+        const recordKey = String(body.id);
+        delete body.version;
+        delete body.force;
+        const { data, error } = await supabase
+            .from("books_records")
+            .upsert({
+                user_id: this.user.id,
+                record_type: kind,
+                record_key: recordKey,
+                data: body,
+                updated_at: new Date().toISOString()
+            }, { onConflict: "user_id,record_type,record_key" })
+            .select("id, updated_at")
+            .single();
+        if (error) throw error;
+        this.versions.set(recordKey, data.updated_at);
+        this.saveCache();
+        return { object: { ...body, id: recordKey, kind } };
     },
     async remove(kind, id) {
-        const res = await this.api("DELETE", `objects/${kind}/${encodeURIComponent(id)}`);
+        const supabase = await this.getSupabase();
+        const { error } = await supabase
+            .from("books_records")
+            .delete()
+            .eq("user_id", this.user.id)
+            .eq("record_type", kind)
+            .eq("record_key", String(id));
+        if (error) throw error;
         this.apply({ kind, id, deleted: true });
-        (res.related || []).forEach(o => this.apply(o));
-        this.versions.delete(id);
+        this.versions.delete(String(id));
         this.saveCache();
         this.emit();
-        return res;
+        return { ok: true };
     },
 
     /* Save in the background (contacts, settings, small changes); retried when back online */
@@ -215,23 +360,8 @@ const Server = {
 
     /* Other people's changes, every 30 seconds and when the tab comes back */
     async poll() {
-        if (!this.online || !this.user) return;
-        try {
-            const res = await this.get(`changes?since=${this.lastSync}`);
-            this.lastSync = res.serverTime;
-            if (!res.objects.length && !res.settings) return;
-            const openId = App.doc && App.doc.id;
-            let openChanged = null;
-            for (const o of res.objects) {
-                if (o.updated_by === this.user.id && this.versions.get(o.id) === o.version) continue;
-                this.apply(o);
-                if (o.id === openId) openChanged = o;
-            }
-            if (res.settings && !this.queue.some(q => q.kind === "settings")) this.applySettings(res.settings);
-            this.saveCache();
-            if (openChanged && typeof onRemoteChange === "function") onRemoteChange(openChanged);
-            this.emit();
-        } catch (e) { if (!e.offline && e.status !== 401) console.warn(e); }
+        // Legacy polling endpoint is not used with Supabase.
+        return;
     },
 
     /* Settings: pushed when they change */
@@ -333,7 +463,23 @@ const SyncBadge = {
    ========================================================== */
 const Auth = {
     resolve: null,
-    run(mode, message) {
+    async run(mode, message) {
+        // Supabase is the only login provider. Never open the legacy in-app login.
+        if (mode === "login") {
+            try {
+                const supabase = await Server.getSupabase();
+                const { data: { session }, error } = await supabase.auth.getSession();
+                if (error) throw error;
+                if (session) {
+                    this.close();
+                    return;
+                }
+            } catch (error) {
+                console.error("Could not verify Supabase session:", error);
+            }
+            location.replace("../login.html");
+            return;
+        }
         return new Promise(res => { this.resolve = res; this.show(mode, message); });
     },
     root() {
@@ -370,6 +516,25 @@ const Auth = {
     },
 
     show(mode, message) {
+        // Calls from legacy API error handlers must not display the old login
+        // form when a valid Supabase session already exists.
+        if (mode === "login") {
+            Server.getSupabase()
+                .then(async supabase => {
+                    const { data: { session }, error } = await supabase.auth.getSession();
+                    if (error) throw error;
+                    if (session) {
+                        this.close();
+                        return;
+                    }
+                    location.replace("../login.html");
+                })
+                .catch(error => {
+                    console.error("Could not verify Supabase session:", error);
+                    location.replace("../login.html");
+                });
+            return;
+        }
         const root = this.root();
         if (mode === "setup") {
             root.innerHTML = this.shell("Set up EVAM Books", "Create the owner account for your organisation. You need the setup code your administrator added to the server.",
@@ -465,7 +630,7 @@ const Auth = {
             document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") Server.poll(); });
             window.addEventListener("online", () => { Server.flush(); Server.poll(); });
         }
-        Migrate.offer();
+        // Legacy server-side import flow is disabled during Supabase migration.
     },
 
     /* ---------- Account menu ---------- */
@@ -486,11 +651,18 @@ const Auth = {
     },
     openUserMenu(anchor) {
         showMenu(anchor, [
-            { heading: `${Server.user.name} · ${Server.roles[Server.user.role] || Server.user.role} ::: ${supabase_profile?.username} ::: ${supabase_profile?.roles}` },
-            { label: Server.user.mfa ? "Two-step sign-in: on" : "Turn on two-step sign-in", icon: "check", onClick: () => TwoFA.dialog() },
+            { heading: `${Server.profile?.username || Server.user.name} · ${Server.profile?.main_role || "User"}` },
+            { label: "Account security", icon: "check", onClick: () => toast("Sign-in security is managed by Supabase Auth.", "", 5000) },
             { label: "Change password", icon: "pen", onClick: () => changePasswordDialog() },
             { divider: true },
-            { label: "Sign out", icon: "x", onClick: async () => { await Server.post("logout").catch(() => {}); localStorage.removeItem(ONLINE_CACHE); location.reload(); } }
+            { label: "Sign out", icon: "x", onClick: async () => {
+                const supabase = await Server.getSupabase();
+                const { error } = await supabase.auth.signOut();
+                if (error) { toast(error.message, "bad", 7000); return; }
+                localStorage.removeItem(ONLINE_CACHE);
+                localStorage.removeItem(QUEUE_KEY);
+                location.replace("../login.html");
+            } }
         ], "right");
     }
 };
@@ -505,8 +677,19 @@ async function changePasswordDialog() {
         actions: [{ label: "Cancel", value: "cancel" }, { label: "Change password", value: "ok", primary: true }]
     });
     if (r.value !== "ok") return;
-    try { await Server.post("me/password", r.data); toast("Password changed.", "good"); }
-    catch (e) { toast(e.message, "bad", 6000); }
+    try {
+        const supabase = await Server.getSupabase();
+        const { data: authData, error: authError } = await supabase.auth.getUser();
+        if (authError) throw authError;
+        const { error: verifyError } = await supabase.auth.signInWithPassword({
+            email: authData.user.email,
+            password: r.data.current
+        });
+        if (verifyError) throw new Error("Current password is incorrect.");
+        const { error } = await supabase.auth.updateUser({ password: r.data.next });
+        if (error) throw error;
+        toast("Password changed.", "good");
+    } catch (e) { toast(e.message, "bad", 6000); }
 }
 
 /* ---------- Two-step sign-in (TOTP) ---------- */
