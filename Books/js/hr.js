@@ -73,7 +73,8 @@ const HR = {
     online() { return typeof Server !== "undefined" && Server.online && !!Server.user; },
     isSelf() { return this.online() && Server.user.role === "employee"; },
     canManage() { return !!(this.online() && this.cfg && this.cfg.perms.manage); },
-    isStaff() { return !!(this.online() && this.cfg && this.cfg.me); },          // has an employee record → My workspace
+    // isStaff() { return !!(this.online() && this.cfg && this.cfg.me); },          // has an employee record → My workspace
+    isStaff() { return this.online() && Server.user.role === "employee"; },
     isAdmin() { return !!(this.online() && this.cfg && this.cfg.perms.admin); },
     canPayroll() { return !!(this.online() && Server.role && Server.role.payroll); },
 

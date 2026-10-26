@@ -755,7 +755,7 @@ Deno.serve(async (req) => {
       return json({ record: data });
     }
 
-    if (route === "leaves" && method === "GET") {
+    if (route === "me/leaves" && method === "GET") {
       const self = isSelfService(roles);
       let q = supabase.from("hr_leaves").select("*").order("created_at", { ascending: false });
       if (self) {
