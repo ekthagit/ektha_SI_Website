@@ -161,7 +161,48 @@ Deno.serve(async (req) => {
     }
     async function employeeForUser() {
       const employees = await getEmployees();
-      return employees.find((e: any) => e.userId === user.id || e.user_id === user.id) || null;
+
+      // First use an explicit Supabase Auth UUID link.
+      const linked = employees.find((e: any) =>
+        String(e.userId || e.user_id || "") === String(user.id)
+      );
+      if (linked) return linked;
+
+      // Otherwise link only when exactly one employee has the signed-in user's email.
+      // Never link by name; duplicate/missing email matches are treated as unlinked.
+      const authEmail = String(user.email || "").trim().toLowerCase();
+      if (!authEmail) return null;
+      const matches = employees.filter((e: any) =>
+        String(e.email || "").trim().toLowerCase() === authEmail
+      );
+      if (matches.length !== 1) return null;
+
+      const match: any = matches[0];
+      const employeeDb = adminClient();
+      const { data: currentRow, error: readError } = await employeeDb
+        .from("objects")
+        .select("data")
+        .eq("id", match.id)
+        .eq("kind", "employee")
+        .eq("deleted", false)
+        .maybeSingle();
+      if (readError) throw new Error(`Could not read employee record for linking: ${readError.message}`);
+      if (!currentRow) return null;
+
+      const linkedData = {
+        ...asObject(currentRow.data),
+        userId: user.id,
+        user_id: user.id,
+        email: authEmail,
+      };
+      const { error: linkError } = await employeeDb
+        .from("objects")
+        .update({ data: linkedData, updated_at: epoch(), updated_by: user.id })
+        .eq("id", match.id)
+        .eq("kind", "employee")
+        .eq("deleted", false);
+      if (linkError) throw new Error(`Could not link employee to signed-in account: ${linkError.message}`);
+      return { ...match, ...linkedData };
     }
     function requireManager() {
       if (!canManage(roles)) throw new Error("Only HR or an admin can perform this action.");
@@ -840,25 +881,44 @@ Deno.serve(async (req) => {
       return json({ record: data });
     }
 
-    if (route === "me/leaves" && method === "GET") {
-      const self = isSelfService(roles);
-      let q = supabase.from("hr_leaves").select("*").order("created_at", { ascending: false });
-      if (self) {
-        const me = await employeeForUser();
-        if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
-        q = q.eq("employee_id", me.id);
-      } else {
-        requireManager();
-      }
-      const { data, error } = await q;
-      if (error) return fail(error.message, 500);
-      return json({ items: data || [], leaves: data || [] });
+    // HR/admin leave-request list. The HR screen calls GET /hr/leaves;
+    // return both the database fields and UI-friendly camelCase aliases.
+    if (route === "leaves" && method === "GET") {
+      requireManager();
+      const hrDb = adminClient();
+      const statusFilter = String(body.status || "").trim().toLowerCase();
+      let query = hrDb.from("hr_leaves").select("*").order("created_at", { ascending: false });
+      if (statusFilter && statusFilter !== "all") query = query.eq("status", statusFilter);
+      const [{ data: rows, error }, employees] = await Promise.all([query, getEmployees()]);
+      if (error) return fail(`Could not load leave requests: ${error.message}`, 500);
+      const employeesById = new Map(employees.map((e: any) => [String(e.id), e]));
+      const items = (rows || []).map((row: any) => {
+        const employee: any = employeesById.get(String(row.employee_id));
+        const leaveType = row.leave_type || row.leaveType || "annual";
+        const startDate = row.start_date || row.startDate || "";
+        const endDate = row.end_date || row.endDate || "";
+        const adminNote = row.admin_note || row.adminNote || "";
+        return {
+          ...row,
+          employeeName: employee?.name || "Employee",
+          employeeCode: employee?.code || "",
+          department: employee?.department || "",
+          leaveType, startDate, endDate, adminNote,
+          days: Number(row.days || 0),
+          reason: row.reason || "",
+          status: row.status || "pending",
+          createdAt: row.created_at,
+        };
+      });
+      return json({ items, leaves: items, requests: items });
     }
 
     if (route === "leaves" && method === "POST") {
       const self = isSelfService(roles);
       if (!self) requireManager();
+      const hrDb = adminClient();
       const me = self ? await employeeForUser() : null;
+      if (self && !me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
       const employeeId = String((self ? me?.id : body.employee_id || body.employeeId) || "");
       if (!employeeId) return fail("An employee must be selected.", 400);
       const startDate = String(body.start_date || body.startDate || "");
@@ -879,13 +939,15 @@ Deno.serve(async (req) => {
         reviewed_at: null,
         reviewed_by: null,
       };
-      const { data, error } = await supabase.from("hr_leaves").insert(row).select().single();
+      const { data, error } = await hrDb.from("hr_leaves").insert(row).select().single();
       if (error) return fail(error.message, 400);
       return json({ leave: data, item: data });
     }
 
     if (parts[1] === "leaves" && parts[2] && method === "POST" &&
         ["approve", "reject", "cancel"].includes(parts[3] || "")) {
+      if ((parts[3] || "") !== "cancel") requireManager();
+      const hrDb = adminClient();
       const id = parts[2];
       const action = parts[3];
       if (action !== "cancel") requireManager();
@@ -897,19 +959,51 @@ Deno.serve(async (req) => {
         patch.reviewed_at = now;
         patch.reviewed_by = user.id;
       }
-      const { data, error } = await supabase.from("hr_leaves")
+      const { data, error } = await hrDb.from("hr_leaves")
         .update(patch).eq("id", id).select().single();
       if (error) return fail(error.message, 400);
       return json({ leave: data, item: data });
     }
 
+    // Compatibility with the HR review dialog, which sends
+    // PUT /hr/leaves/:id/review with status and an optional admin note.
+    // Keep the existing POST approve/reject/cancel routes unchanged.
+    if (parts[1] === "leaves" && parts[2] && parts[3] === "review" && method === "PUT") {
+      requireManager();
+      const id = parts[2];
+      const requestedStatus = String(body.status || body.action || "").trim().toLowerCase();
+      const statusMap: Record<string, string> = {
+        approve: "approved",
+        approved: "approved",
+        reject: "rejected",
+        rejected: "rejected",
+      };
+      const nextStatus = statusMap[requestedStatus];
+      if (!nextStatus) return fail("Choose approve or reject for this leave request.", 400);
+
+      const hrDb = adminClient();
+      const patch = {
+        status: nextStatus,
+        admin_note: String(body.admin_note || body.adminNote || body.note || ""),
+        reviewed_at: now,
+        reviewed_by: user.id,
+      };
+      const { data, error } = await hrDb.from("hr_leaves")
+        .update(patch).eq("id", id).select().maybeSingle();
+      if (error) return fail(`Could not review leave request: ${error.message}`, 400);
+      if (!data) return fail("Leave request not found.", 404);
+      return json({ ok: true, leave: data, item: data });
+    }
+
     if (route === "holidays" && method === "GET") {
-      const { data, error } = await supabase.from("hr_holidays").select("*").order("date");
+      const hrDb = adminClient();
+      const { data, error } = await hrDb.from("hr_holidays").select("*").order("date");
       if (error) return fail(error.message, 500);
       return json({ items: data || [], holidays: data || [] });
     }
     if (route === "holidays" && method === "POST") {
       requireManager();
+      const hrDb = adminClient();
       const row = {
         id: String(body.id || uid("hol_")),
         date: String(body.date || ""),
@@ -918,14 +1012,15 @@ Deno.serve(async (req) => {
         created_at: now, updated_at: now,
       };
       if (!row.date || !row.name) return fail("Holiday date and name are required.");
-      const { data, error } = await supabase.from("hr_holidays")
+      const { data, error } = await hrDb.from("hr_holidays")
         .upsert(row, { onConflict: "date" }).select().single();
       if (error) return fail(error.message, 400);
       return json({ holiday: data });
     }
     if (parts[1] === "holidays" && parts[2] && method === "DELETE") {
       requireManager();
-      const { error } = await supabase.from("hr_holidays").delete().eq("id", parts[2]);
+      const hrDb = adminClient();
+      const { error } = await hrDb.from("hr_holidays").delete().eq("id", parts[2]);
       if (error) return fail(error.message, 400);
       return json({ ok: true });
     }
@@ -958,17 +1053,18 @@ Deno.serve(async (req) => {
     if (route === "me/dashboard" && method === "GET") {
       const me = await employeeForUser();
       if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
+      const hrDb = adminClient();
 
       const month = today.slice(0, 7);
       const yearStart = `${today.slice(0, 4)}-01-01`;
       const yearEnd = `${today.slice(0, 4)}-12-31`;
       const monthStart = `${month}-01`;
       const [{ data: attendanceRows, error: attendanceError }, { data: leaveRows, error: leaveError }, { data: holidayRows, error: holidayError }] = await Promise.all([
-        supabase.from("hr_attendance").select("*").eq("employee_id", me.id)
+        hrDb.from("hr_attendance").select("*").eq("employee_id", me.id)
           .gte("date", monthStart).lte("date", today).order("date", { ascending: false }),
-        supabase.from("hr_leaves").select("*").eq("employee_id", me.id)
+        hrDb.from("hr_leaves").select("*").eq("employee_id", me.id)
           .lte("start_date", yearEnd).gte("end_date", yearStart).order("created_at", { ascending: false }),
-        supabase.from("hr_holidays").select("*").gte("date", today).order("date", { ascending: true }),
+        hrDb.from("hr_holidays").select("*").gte("date", today).order("date", { ascending: true }),
       ]);
       if (attendanceError || leaveError || holidayError) {
         return fail((attendanceError || leaveError || holidayError)!.message, 500);
@@ -1023,11 +1119,12 @@ Deno.serve(async (req) => {
     if (route === "me/attendance" && method === "GET") {
       const me = await employeeForUser();
       if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
+      const hrDb = adminClient();
       const month = /^\d{4}-\d{2}$/.test(String(body.month || "")) ? String(body.month) : today.slice(0, 7);
       const [yy, mm] = month.split("-").map(Number);
       const first = `${month}-01`;
       const last = new Date(Date.UTC(yy, mm, 0)).toISOString().slice(0, 10);
-      const { data: rows, error } = await supabase.from("hr_attendance").select("*")
+      const { data: rows, error } = await hrDb.from("hr_attendance").select("*")
         .eq("employee_id", me.id).gte("date", first).lte("date", last).order("date", { ascending: false });
       if (error) return fail(`Could not load your attendance: ${error.message}`, 500);
       const records = (rows || []).map((a: any) => {
@@ -1044,12 +1141,13 @@ Deno.serve(async (req) => {
     // Employee self-service: only this employee's leave records can be read or changed.
     if (route === "me/leaves" && method === "GET") {
       const me = await employeeForUser();
+      const hrDb = adminClient();
       if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
       const yearStart = `${today.slice(0, 4)}-01-01`;
       const yearEnd = `${today.slice(0, 4)}-12-31`;
       const [{ data: rows, error }, { data: holidays, error: holidayError }] = await Promise.all([
-        supabase.from("hr_leaves").select("*").eq("employee_id", me.id).order("created_at", { ascending: false }),
-        supabase.from("hr_holidays").select("date").gte("date", yearStart).lte("date", yearEnd),
+        hrDb.from("hr_leaves").select("*").eq("employee_id", me.id).order("created_at", { ascending: false }),
+        hrDb.from("hr_holidays").select("date").gte("date", yearStart).lte("date", yearEnd),
       ]);
       if (error || holidayError) return fail((error || holidayError)!.message, 500);
       const leaves = (rows || []).map((l: any) => ({
@@ -1069,12 +1167,13 @@ Deno.serve(async (req) => {
     if (route === "me/leaves" && method === "POST") {
       const me = await employeeForUser();
       if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
+      const hrDb = adminClient();
       const type = String(body.leaveType || body.leave_type || "annual").toLowerCase();
       if (!["annual", "sick", "casual", "unpaid"].includes(type)) return fail("Choose a valid leave type.");
       const startDate = String(body.startDate || body.start_date || "");
       const endDate = String(body.endDate || body.end_date || "");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate) || endDate < startDate) return fail("Enter a valid leave date range.");
-      const { data: holidayRows, error: holidayError } = await supabase.from("hr_holidays").select("date").gte("date", startDate).lte("date", endDate);
+      const { data: holidayRows, error: holidayError } = await hrDb.from("hr_holidays").select("date").gte("date", startDate).lte("date", endDate);
       if (holidayError) return fail(holidayError.message, 500);
       const holidaySet = new Set((holidayRows || []).map((x: any) => x.date));
       let days = 0;
@@ -1084,7 +1183,7 @@ Deno.serve(async (req) => {
         d = new Date(Date.parse(`${d}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
       }
       if (!days) return fail("The selected dates contain no working days.");
-      const { data: row, error } = await supabase.from("hr_leaves").insert({
+      const { data: row, error } = await hrDb.from("hr_leaves").insert({
         id: uid("leave_"), employee_id: me.id, leave_type: type, start_date: startDate, end_date: endDate,
         days, reason: String(body.reason || ""), status: "pending", admin_note: "", created_at: now,
         created_by: user.id, reviewed_at: null, reviewed_by: null,
@@ -1097,7 +1196,8 @@ Deno.serve(async (req) => {
     if (selfLeaveDelete && method === "DELETE") {
       const me = await employeeForUser();
       if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
-      const { data, error } = await supabase.from("hr_leaves").update({ status: "cancelled", reviewed_at: now })
+      const hrDb = adminClient();
+      const { data, error } = await hrDb.from("hr_leaves").update({ status: "cancelled", reviewed_at: now })
         .eq("id", selfLeaveDelete[1]).eq("employee_id", me.id).eq("status", "pending").select("id").maybeSingle();
       if (error) return fail(error.message, 400);
       if (!data) return fail("Leave request not found or it is no longer pending.", 409);
@@ -1134,7 +1234,8 @@ Deno.serve(async (req) => {
     if (route === "me/today" && method === "GET") {
       const me = await employeeForUser();
       if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
-      const { data, error } = await supabase.from("hr_attendance").select("*")
+      const hrDb = adminClient();
+      const { data, error } = await hrDb.from("hr_attendance").select("*")
         .eq("employee_id", me.id).eq("date", today).maybeSingle();
       if (error) return fail(error.message, 500);
       return json({ date: today, record: data || null });
@@ -1142,7 +1243,8 @@ Deno.serve(async (req) => {
     if (route === "me/clock-in" && method === "POST") {
       const me = await employeeForUser();
       if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
-      const { data: existing } = await supabase.from("hr_attendance").select("*")
+      const hrDb = adminClient();
+      const { data: existing } = await hrDb.from("hr_attendance").select("*")
         .eq("employee_id", me.id).eq("date", today).maybeSingle();
       if (existing?.clock_in) return fail("You have already clocked in today.", 409);
       const row = {
@@ -1150,7 +1252,7 @@ Deno.serve(async (req) => {
         clock_in: now, clock_out: null, status: "present", notes: "",
         edited: false, created_at: existing?.created_at || now, updated_at: now, updated_by: user.id,
       };
-      const { data, error } = await supabase.from("hr_attendance")
+      const { data, error } = await hrDb.from("hr_attendance")
         .upsert(row, { onConflict: "employee_id,date" }).select().single();
       if (error) return fail(error.message, 400);
       return json({ record: data });
@@ -1158,12 +1260,13 @@ Deno.serve(async (req) => {
     if (route === "me/clock-out" && method === "POST") {
       const me = await employeeForUser();
       if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
-      const { data: existing, error: readError } = await supabase.from("hr_attendance").select("*")
+      const hrDb = adminClient();
+      const { data: existing, error: readError } = await hrDb.from("hr_attendance").select("*")
         .eq("employee_id", me.id).eq("date", today).maybeSingle();
       if (readError) return fail(readError.message, 500);
       if (!existing?.clock_in) return fail("You have not clocked in today.", 409);
       if (existing.clock_out) return fail("You have already clocked out today.", 409);
-      const { data, error } = await supabase.from("hr_attendance").update({ clock_out: now, updated_at: now, updated_by: user.id })
+      const { data, error } = await hrDb.from("hr_attendance").update({ clock_out: now, updated_at: now, updated_by: user.id })
         .eq("id", existing.id).select().single();
       if (error) return fail(error.message, 400);
       return json({ record: data });
