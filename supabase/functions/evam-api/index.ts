@@ -140,16 +140,22 @@ Deno.serve(async (req) => {
     const now = epoch();
 
     async function getEmployees() {
-      const { data, error } = await supabase
+      // Employee records live in public.objects. Use the server-side service-role
+      // client here because the browser user's RLS policies can otherwise return
+      // an empty list even when employee rows exist. This key is never sent to
+      // the browser; configure it in Supabase Edge Function Secrets.
+      const employeeDb = adminClient();
+      const { data, error } = await employeeDb
         .from("objects")
         .select("id,number,data,deleted")
         .eq("kind", "employee")
-        .eq("deleted", false);
-      if (error) throw error;
+        .eq("deleted", false)
+        .order("number", { ascending: true });
+      if (error) throw new Error(`Could not load employees: ${error.message}`);
       return (data || []).map((r: any) => ({
+        ...asObject(r.data),
         id: r.id,
         code: r.number || asObject(r.data).code || "",
-        ...asObject(r.data),
         idFromRow: r.id,
       }));
     }
@@ -722,6 +728,85 @@ Deno.serve(async (req) => {
       return json({ employees, items: employees });
     }
 
+    // Create an employee record using the existing objects table. Keep this route
+    // deliberately scoped to POST /hr/employees; other HR routes are unchanged.
+    if (route === "employees" && method === "POST") {
+      requireManager();
+
+      // Use the server-side service-role client for this trusted, role-checked
+      // write so the objects table's user-facing RLS policies remain enabled.
+      // This key must exist only in Supabase Edge Function secrets, never in the browser.
+      const employeeDb = adminClient();
+
+      const name = String(body.name || "").trim();
+      const code = String(body.code || "").trim();
+      if (!name) return fail("Employee full name is required.", 400);
+      if (!code) return fail("Employee number is required.", 400);
+
+      const { data: existing, error: existingError } = await employeeDb
+        .from("objects")
+        .select("id,number,data,deleted")
+        .eq("kind", "employee")
+        .eq("number", code)
+        .eq("deleted", false)
+        .limit(1);
+      if (existingError) return fail(`Could not check employee number: ${existingError.message}`, 500);
+      if (existing && existing.length) return fail("That employee number is already in use.", 409);
+
+      const id = String(body.id || uid("emp_"));
+      const timestamp = epoch();
+      const employeeData = {
+        name,
+        code,
+        department: String(body.department || "").trim(),
+        designation: String(body.designation || "").trim(),
+        joined: String(body.joined || today),
+        email: String(body.email || "").trim(),
+        phone: String(body.phone || "").trim(),
+        status: String(body.status || "active"),
+        leave: {
+          annual: Number(asObject(body.leave).annual ?? h.leaveDefaults.annual),
+          sick: Number(asObject(body.leave).sick ?? h.leaveDefaults.sick),
+          casual: Number(asObject(body.leave).casual ?? h.leaveDefaults.casual),
+        },
+        userId: body.userId || null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        version: 1,
+      };
+
+      const { data: saved, error: saveError } = await employeeDb
+        .from("objects")
+        .insert({
+          id,
+          kind: "employee",
+          type: "employee",
+          number: code,
+          date: employeeData.joined,
+          status: employeeData.status,
+          contact: employeeData.email || null,
+          data: employeeData,
+          version: 1,
+          deleted: false,
+          created_at: timestamp,
+          created_by: user.id,
+          updated_at: timestamp,
+          updated_by: user.id,
+        })
+        .select("id,number,data,deleted,version")
+        .single();
+      if (saveError) return fail(`Could not save employee: ${saveError.message}`, 500);
+
+      const savedData = asObject(saved.data);
+      const employee = {
+        id: saved.id,
+        code: saved.number || savedData.code || code,
+        ...savedData,
+        version: saved.version ?? savedData.version ?? 1,
+      };
+      return json({ ok: true, employee, object: { ...saved, data: savedData } }, 201);
+    }
+
     if (route === "attendance" && method === "GET") {
       requireManager();
       let q = supabase.from("hr_attendance").select("*").order("date", { ascending: false });
@@ -866,6 +951,184 @@ Deno.serve(async (req) => {
         .eq("id", Number(parts[2])).eq("user_id", user.id);
       if (error) return fail(error.message, 400);
       return json({ ok: true });
+    }
+
+    // Employee self-service dashboard used by Books/js/hr.js (pageMyDay).
+    // Return the exact camelCase fields consumed by the employee UI.
+    if (route === "me/dashboard" && method === "GET") {
+      const me = await employeeForUser();
+      if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
+
+      const month = today.slice(0, 7);
+      const yearStart = `${today.slice(0, 4)}-01-01`;
+      const yearEnd = `${today.slice(0, 4)}-12-31`;
+      const monthStart = `${month}-01`;
+      const [{ data: attendanceRows, error: attendanceError }, { data: leaveRows, error: leaveError }, { data: holidayRows, error: holidayError }] = await Promise.all([
+        supabase.from("hr_attendance").select("*").eq("employee_id", me.id)
+          .gte("date", monthStart).lte("date", today).order("date", { ascending: false }),
+        supabase.from("hr_leaves").select("*").eq("employee_id", me.id)
+          .lte("start_date", yearEnd).gte("end_date", yearStart).order("created_at", { ascending: false }),
+        supabase.from("hr_holidays").select("*").gte("date", today).order("date", { ascending: true }),
+      ]);
+      if (attendanceError || leaveError || holidayError) {
+        return fail((attendanceError || leaveError || holidayError)!.message, 500);
+      }
+
+      const attendance = attendanceRows || [];
+      const leaves = leaveRows || [];
+      const holidays = (holidayRows || []).map((x: any) => ({ ...x, estimated: !!x.estimated }));
+      const caps = { ...h.leaveDefaults, ...asObject(me.leaveDefaults) };
+      const leaveTypes = ["annual", "sick", "casual"] as const;
+      const balance: Record<string, number> = {};
+      for (const type of leaveTypes) {
+        const used = leaves.filter((l: any) => l.status === "approved" && String(l.leave_type || l.leaveType || "annual").toLowerCase() === type)
+          .reduce((sum: number, l: any) => sum + Math.max(0, Number(l.days || 0)), 0);
+        balance[type] = Math.max(0, Number(caps[type] ?? 0) - used);
+      }
+      const pendingLeaves = leaves.filter((l: any) => l.status === "pending").length;
+      const todayLeave = leaves.find((l: any) => l.status === "approved" && l.start_date <= today && l.end_date >= today);
+      const todayHoliday = holidays.find((x: any) => x.date === today)?.name || "";
+      const recent = attendance.slice(0, 10).map((a: any) => {
+        const clockIn = a.clock_in == null ? null : Number(a.clock_in);
+        const clockOut = a.clock_out == null ? null : Number(a.clock_out);
+        const hours = clockIn && clockOut ? Math.max(0, (clockOut - clockIn) / 3600000) : 0;
+        return {
+          id: a.id, date: a.date, clockIn, clockOut,
+          clockInLocal: clockIn ? new Date(clockIn).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: h.timezone }) : "",
+          clockOutLocal: clockOut ? new Date(clockOut).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: h.timezone }) : "",
+          hours: Math.round(hours * 100) / 100, status: a.status || "present", notes: a.notes || "", edited: !!a.edited,
+        };
+      });
+      const worked = attendance.filter((a: any) => a.clock_in);
+      const hours = worked.reduce((sum: number, a: any) => {
+        if (!a.clock_in || !a.clock_out) return sum;
+        return sum + Math.max(0, (Number(a.clock_out) - Number(a.clock_in)) / 3600000);
+      }, 0);
+      const weekend = h.weekend.includes(new Date(`${today}T00:00:00Z`).getUTCDay());
+
+      return json({
+        date: today, today, month,
+        leave: { annual: balance.annual, sick: balance.sick, casual: balance.casual, unpaid: Number(caps.unpaid ?? 0) },
+        pendingLeaves,
+        presentDays: new Set(worked.map((a: any) => a.date)).size,
+        lateDays: new Set(attendance.filter((a: any) => a.status === "late").map((a: any) => a.date)).size,
+        hours: Math.round(hours * 100) / 100,
+        recent, upcomingHolidays: holidays.slice(0, 8), todayHoliday,
+        onLeave: todayLeave ? { leaveType: todayLeave.leave_type || todayLeave.leaveType || "annual", endDate: todayLeave.end_date } : null,
+        weekend,
+      });
+    }
+
+    // Employee self-service: attendance history for the selected month.
+    if (route === "me/attendance" && method === "GET") {
+      const me = await employeeForUser();
+      if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
+      const month = /^\d{4}-\d{2}$/.test(String(body.month || "")) ? String(body.month) : today.slice(0, 7);
+      const [yy, mm] = month.split("-").map(Number);
+      const first = `${month}-01`;
+      const last = new Date(Date.UTC(yy, mm, 0)).toISOString().slice(0, 10);
+      const { data: rows, error } = await supabase.from("hr_attendance").select("*")
+        .eq("employee_id", me.id).gte("date", first).lte("date", last).order("date", { ascending: false });
+      if (error) return fail(`Could not load your attendance: ${error.message}`, 500);
+      const records = (rows || []).map((a: any) => {
+        const clockIn = a.clock_in == null ? null : Number(a.clock_in);
+        const clockOut = a.clock_out == null ? null : Number(a.clock_out);
+        const end = clockOut || (a.date === today && clockIn ? now : null);
+        const hours = clockIn && end ? Math.max(0, (end - clockIn) / 3600000) : 0;
+        const localTime = (v: number | null) => v ? new Date(v).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: h.timezone }) : "";
+        return { id: a.id, date: a.date, clockIn, clockOut, clockInLocal: localTime(clockIn), clockOutLocal: localTime(clockOut), hours: Math.round(hours * 100) / 100, status: a.status || "present", notes: a.notes || "", edited: !!a.edited };
+      });
+      return json({ month, records });
+    }
+
+    // Employee self-service: only this employee's leave records can be read or changed.
+    if (route === "me/leaves" && method === "GET") {
+      const me = await employeeForUser();
+      if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
+      const yearStart = `${today.slice(0, 4)}-01-01`;
+      const yearEnd = `${today.slice(0, 4)}-12-31`;
+      const [{ data: rows, error }, { data: holidays, error: holidayError }] = await Promise.all([
+        supabase.from("hr_leaves").select("*").eq("employee_id", me.id).order("created_at", { ascending: false }),
+        supabase.from("hr_holidays").select("date").gte("date", yearStart).lte("date", yearEnd),
+      ]);
+      if (error || holidayError) return fail((error || holidayError)!.message, 500);
+      const leaves = (rows || []).map((l: any) => ({
+        id: l.id, leaveType: l.leave_type || "annual", startDate: l.start_date, endDate: l.end_date,
+        days: Number(l.days || 0), reason: l.reason || "", status: l.status || "pending", adminNote: l.admin_note || "",
+        createdAt: l.created_at,
+      }));
+      const caps = { ...h.leaveDefaults, ...asObject(me.leaveDefaults), ...asObject(me.leave) };
+      const balance: Record<string, number> = {};
+      for (const type of ["annual", "sick", "casual", "unpaid"]) {
+        const used = leaves.filter((l: any) => l.status === "approved" && l.leaveType === type).reduce((sum: number, l: any) => sum + l.days, 0);
+        balance[type] = type === "unpaid" ? Number(caps.unpaid ?? 0) : Math.max(0, Number(caps[type] ?? 0) - used);
+      }
+      return json({ leaves, leave: balance });
+    }
+
+    if (route === "me/leaves" && method === "POST") {
+      const me = await employeeForUser();
+      if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
+      const type = String(body.leaveType || body.leave_type || "annual").toLowerCase();
+      if (!["annual", "sick", "casual", "unpaid"].includes(type)) return fail("Choose a valid leave type.");
+      const startDate = String(body.startDate || body.start_date || "");
+      const endDate = String(body.endDate || body.end_date || "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate) || endDate < startDate) return fail("Enter a valid leave date range.");
+      const { data: holidayRows, error: holidayError } = await supabase.from("hr_holidays").select("date").gte("date", startDate).lte("date", endDate);
+      if (holidayError) return fail(holidayError.message, 500);
+      const holidaySet = new Set((holidayRows || []).map((x: any) => x.date));
+      let days = 0;
+      for (let d = startDate, guard = 0; d <= endDate && guard < 400; guard++) {
+        const dow = new Date(`${d}T00:00:00Z`).getUTCDay();
+        if (!h.weekend.includes(dow) && !holidaySet.has(d)) days++;
+        d = new Date(Date.parse(`${d}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+      }
+      if (!days) return fail("The selected dates contain no working days.");
+      const { data: row, error } = await supabase.from("hr_leaves").insert({
+        id: uid("leave_"), employee_id: me.id, leave_type: type, start_date: startDate, end_date: endDate,
+        days, reason: String(body.reason || ""), status: "pending", admin_note: "", created_at: now,
+        created_by: user.id, reviewed_at: null, reviewed_by: null,
+      }).select().single();
+      if (error) return fail(`Could not submit leave request: ${error.message}`, 400);
+      return json({ leave: { id: row.id, leaveType: row.leave_type, startDate: row.start_date, endDate: row.end_date, days: Number(row.days), reason: row.reason || "", status: row.status, adminNote: row.admin_note || "" } }, 201);
+    }
+
+    const selfLeaveDelete = route.match(/^me\/leaves\/([^/]+)$/);
+    if (selfLeaveDelete && method === "DELETE") {
+      const me = await employeeForUser();
+      if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
+      const { data, error } = await supabase.from("hr_leaves").update({ status: "cancelled", reviewed_at: now })
+        .eq("id", selfLeaveDelete[1]).eq("employee_id", me.id).eq("status", "pending").select("id").maybeSingle();
+      if (error) return fail(error.message, 400);
+      if (!data) return fail("Leave request not found or it is no longer pending.", 409);
+      return json({ ok: true });
+    }
+
+    // Only approved/paid pay runs are visible to an employee, and only their own line.
+    if (route === "me/payslips" && method === "GET") {
+      const me = await employeeForUser();
+      if (!me) return fail("Your sign-in isn't linked to an employee record yet. Ask HR to link it.", 409);
+      const payrollDb = adminClient();
+      const { data: rows, error } = await payrollDb.from("objects")
+        .select("id,number,date,status,data,deleted")
+        .eq("kind", "payrun").eq("deleted", false).in("status", ["approved", "paid"])
+        .order("date", { ascending: false });
+      if (error) return fail(`Could not load your payslips: ${error.message}`, 500);
+      const payslips: any[] = [];
+      for (const row of rows || []) {
+        const runData = asObject(row.data);
+        const run = { ...runData, id: row.id, number: row.number || runData.number || "", date: row.date || runData.date || "", status: row.status || runData.status || "" };
+        if (!Array.isArray(run.lines)) continue;
+        for (const line of run.lines) {
+          if (String(line.employeeId || line.employee_id || "") !== String(me.id)) continue;
+          payslips.push({
+            run: { id: run.id, number: run.number, period: run.period || "", date: run.date, status: run.status, payment: run.payment ? { date: run.payment.date || "" } : null },
+            line: { ...line, gross: Number(line.gross || 0), totalDeductions: Number(line.totalDeductions ?? line.total_deductions ?? 0), net: Number(line.net || 0) },
+          });
+        }
+      }
+      payslips.sort((a, b) => String(b.run.period).localeCompare(String(a.run.period)) || String(b.run.date).localeCompare(String(a.run.date)));
+      return json({ payslips, divisor: Number(h.payDivisor) || 30 });
     }
 
     if (route === "me/today" && method === "GET") {
