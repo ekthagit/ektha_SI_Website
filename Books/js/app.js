@@ -1856,18 +1856,29 @@ function renderDocsView() {
     renderDocsTable();
 }
 
+// Match the Finance > Invoices balance calculation when connected to Supabase.
+function documentsInvoiceBalance(d) {
+    if (!d || d.status === "cancelled") return 0;
+    if (!Server.online) return invoiceBalance(d);
+    const total = computeTotals({ ...d, paid: 0 }).total;
+    const allocated = (Server.fin.payment || []).reduce((sum, payment) =>
+        sum + (payment.allocations || []).reduce((part, allocation) =>
+            part + (allocation.docId === d.id ? num(allocation.amount) : 0), 0), 0);
+    return Math.max(0, round(total - allocated - num(d.credited), decimalsFor(d.currency || "AED")));
+}
+
 function renderLedgerStrip() {
     const primary = Store.settings.defaults.currency;
     const docs = Store.data.docs;
     const month = todayISO().slice(0, 7);
     const sumBy = (list, fn) => list.reduce((m, d) => { const v = fn(d); if (v) m[d.currency] = (m[d.currency] || 0) + v; return m; }, {});
     const invoices = docs.filter(d => d.type === "invoice");
-    // Every saved invoice that is not paid or cancelled is owed, drafts and imported ones included
-    const open = invoices.filter(d => invoiceBalance(d) > 0);
-    const outstanding = sumBy(open, d => invoiceBalance(d));
+    // Use the same payment-allocation balance as Finance > Invoices.
+    const open = invoices.filter(d => documentsInvoiceBalance(d) > 0);
+    const outstanding = sumBy(open, d => documentsInvoiceBalance(d));
     const drafts = open.filter(d => d.status === "draft").length;
     const overdueList = open.filter(d => effectiveStatus(d) === "overdue");
-    const overdue = sumBy(overdueList, d => invoiceBalance(d));
+    const overdue = sumBy(overdueList, d => documentsInvoiceBalance(d));
     // Money received this month: payments recorded this month (older records fall back to the invoice date)
     const receivedIn = d => (d.paidAt ? isoOf(new Date(d.paidAt)) : d.date || "").slice(0, 7) === month;
     const receivedList = Server.online ? Server.fin.payment.filter(p => (p.date || "").slice(0, 7) === month) : invoices.filter(d => d.status !== "cancelled" && num(d.paid) > 0 && receivedIn(d));
@@ -1942,7 +1953,7 @@ function renderDocsTable() {
       <td>${fmtDate(d.date)}</td>
       <td>${fmtDate(d.due || d.valid) || '<span class="muted">—</span>'}</td>
       <td class="num">${tot ? `<span class="cur">${d.currency}</span>${fmt(tot.total, d.currency)}` : '<span class="muted">—</span>'}</td>
-      <td class="num">${tot && t.paid ? (invoiceBalance(d) > 0 ? `<span class="cur">${d.currency}</span>${fmt(invoiceBalance(d), d.currency)}` : '<span class="muted">0.00</span>') : '<span class="muted">—</span>'}</td>
+      <td class="num">${tot && t.paid ? (documentsInvoiceBalance(d) > 0 ? `<span class="cur">${d.currency}</span>${fmt(documentsInvoiceBalance(d), d.currency)}` : '<span class="muted">0.00</span>') : '<span class="muted">—</span>'}</td>
       <td>${statusPill(d)}${d.import && !d.import.checked ? ` <span class="pill pill-warn" title="${esc((d.import.issues || []).join(" "))}">Check</span>` : ""}</td>
       <td class="act"><button type="button" class="icon-btn" data-docmenu="${d.id}" aria-label="Actions for ${esc(d.number)}">${icon("more")}</button></td>
     </tr>`;
@@ -1963,7 +1974,7 @@ function docRowMenu(anchor, id) {
         { label: "Duplicate", icon: "copy", onClick: async () => { if (await openSaved(id)) duplicateCurrent(); } }
     ];
     (CONVERSIONS[d.type] || []).forEach(k => items.push({ label: `Create ${DOC_TYPES[k].label.toLowerCase()}`, icon: "swap", onClick: async () => { if (await openSaved(id)) convertCurrent(k); } }));
-    if (Server.online && t.paid && d.status !== "cancelled" && invoiceBalance(d) > 0 && Server.can("sales")) items.push({ label: "Record payment", icon: "check", onClick: () => Finance.paymentForm({ invoiceId: d.id }) });
+    if (Server.online && t.paid && d.status !== "cancelled" && documentsInvoiceBalance(d) > 0 && Server.can("sales")) items.push({ label: "Record payment", icon: "check", onClick: () => Finance.paymentForm({ invoiceId: d.id }) });
     if (Server.online && d.type === "purchaseOrder" && Server.can("purchases")) items.push({ label: "Create bill", icon: "swap", onClick: () => Finance.billFromPO(d) });
     if (!Server.online && t.paid && !["paid", "cancelled"].includes(d.status) && invoiceBalance(d) > 0) items.push({ label: "Mark as paid", icon: "check", onClick: () => {
         d.paid = amountDue(d); d.status = "paid"; d.paidAt = Date.now(); Store.saveDoc(d);

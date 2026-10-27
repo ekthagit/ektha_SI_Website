@@ -24,7 +24,7 @@ Object.assign(Finance, {
         const p = this.params;
         return `<div class="filters fin-filters">
 <label class="search"><span class="search-ic">${icon("search")}</span><input id="sdSearch" type="search" placeholder="Search number, name or reference" value="${esc(p.get("q") || "")}"></label>
-${statuses.length ? `<select id="sdStatus" aria-label="Status"><option value="">Any status</option>${statuses.map(s => `<option value="${s}"${s === p.get("status") ? " selected" : ""}>${(STATUS[s] || {}).label || s}</option>`).join("")}</select>` : ""}
+${statuses.length ? `<select id="sdStatus" aria-label="Status"><option value="">Any status</option>${statuses.map(s => `<option value="${s}"${s === p.get("status") ? " selected" : ""}>${s === "outstanding" ? "Outstanding" : (STATUS[s] || {}).label || s}</option>`).join("")}</select>` : ""}
 ${people.length ? `<select id="sdWho" aria-label="${personLabel}"><option value="">Every ${personLabel.toLowerCase()}</option>${people.map(n => `<option value="${esc(n)}"${n === p.get("who") ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>` : ""}
 </div>`;
     },
@@ -65,7 +65,18 @@ ${people.length ? `<select id="sdWho" aria-label="${personLabel}"><option value=
         const q = (p.get("q") || "").toLowerCase(), st = p.get("status") || "", who = p.get("who") || "";
         const types = kind === "quotes" ? ["quotation", "proforma", "salesOrder"] : [kind];
         const all = Store.data.docs.filter(d => types.includes(d.type));
-        const match = d => (!q || [d.number, d.party?.name, d.ref, d.poNumber, d.subject].join(" ").toLowerCase().includes(q)) && (!st || effectiveStatus(d) === st) && (!who || this.sameName(d.party?.name, who));
+        // Use saved payment allocations to determine whether an invoice still has a balance.
+        const isOutstanding = d => {
+            if (d.status === "cancelled") return false;
+            const total = this.docTotal(d);
+            const allocated = (Server.fin.payment || []).reduce((sum, payment) =>
+                sum + (payment.allocations || []).reduce((part, allocation) =>
+                    part + (allocation.docId === d.id ? num(allocation.amount) : 0), 0), 0);
+            return Math.max(0, round(total - allocated - num(d.credited), decimalsFor(d.currency || "AED"))) > 0;
+        };
+        const match = d => (!q || [d.number, d.party?.name, d.ref, d.poNumber, d.subject].join(" ").toLowerCase().includes(q))
+            && (!st || (kind === "invoice" && st === "outstanding" ? isOutstanding(d) : effectiveStatus(d) === st))
+            && (!who || this.sameName(d.party?.name, who));
         const list = all.filter(match).sort((a, b) => (b.date || "").localeCompare(a.date || "") || String(b.number || "").localeCompare(String(a.number || "")));
         const people = [...new Map(all.filter(d => d.party?.name).map(d => [d.party.name.trim().toLowerCase(), d.party.name.trim()])).values()].sort((a, b) => a.localeCompare(b));
         const canSales = Server.can("sales"), canBuy = Server.can("purchases");
@@ -73,7 +84,17 @@ ${people.length ? `<select id="sdWho" aria-label="${personLabel}"><option value=
         const aed = v => `<span class="ls-cur">AED</span>${fmt(v)}`;
 
         if (kind === "invoice") {
-            const open = all.filter(d => d.status !== "cancelled" && invoiceBalance(d) > 0);
+            // Online payments are stored separately from invoice documents. Use saved
+            // allocations as the source of truth for balances shown on this page.
+            const balance = d => {
+                if (d.status === "cancelled") return 0;
+                const total = this.docTotal(d);
+                const allocated = (Server.fin.payment || []).reduce((sum, p) =>
+                    sum + (p.allocations || []).reduce((part, a) =>
+                        part + (a.docId === d.id ? num(a.amount) : 0), 0), 0);
+                return Math.max(0, round(total - allocated - num(d.credited), decimalsFor(d.currency || "AED")));
+            };
+            const open = all.filter(d => d.status !== "cancelled" && balance(d) > 0);
             const overdue = open.filter(d => effectiveStatus(d) === "overdue");
             const month = this.today().slice(0, 7);
             const received = (Server.fin.payment || []).filter(x => (x.date || "").startsWith(month)).reduce((s, x) => s + num(x.amount) * ((x.currency || "AED") === "AED" ? 1 : num(x.rate) || num(LiveFX.rate(x.currency)) || 0), 0);
@@ -84,20 +105,20 @@ ${people.length ? `<select id="sdWho" aria-label="${personLabel}"><option value=
             main.innerHTML = this.head("Invoices", "Every invoice from the document desk, with what has been paid and what is still owed.",
                 `${who ? this.link("Customer statement", `#finance/report/customer_statement?contact=${encodeURIComponent(who)}`, "btn-ghost", "file") : ""}${canSales ? this.link("Record payment", "#finance/payment/new", "btn-ghost", "check") + `<button type="button" class="btn btn-primary" data-new="invoice">${icon("plus")}<span>New invoice</span></button>` : ""}`) + `
 <div class="ledger-strip fin-kpis">
-  <div class="ls"><div class="ls-label">Outstanding</div><div class="ls-value">${aed(open.reduce((s, d) => s + this.toAED(d, invoiceBalance(d)), 0))}</div><div class="ls-note">${open.length} unpaid invoice${open.length === 1 ? "" : "s"}${looseCredit > 0.004 ? ` · less AED ${fmt(looseCredit)} customer credit` : ""}</div></div>
-  <div class="ls ${overdue.length ? "ls-bad" : ""}"><div class="ls-label">Overdue</div><div class="ls-value">${aed(overdue.reduce((s, d) => s + this.toAED(d, invoiceBalance(d)), 0))}</div><div class="ls-note">${overdue.length ? `${overdue.length} past the due date` : "Nothing overdue"}</div></div>
+  <a class="ls" href="#finance/invoices?status=outstanding" aria-label="View ${open.length} outstanding invoices"><div class="ls-label">Outstanding</div><div class="ls-value">${aed(open.reduce((s, d) => s + this.toAED(d, balance(d)), 0))}</div><div class="ls-note">${open.length} unpaid invoice${open.length === 1 ? "" : "s"}${looseCredit > 0.004 ? ` · less AED ${fmt(looseCredit)} customer credit` : ""} · Click to view</div></a>
+  <a class="ls ${overdue.length ? "ls-bad" : ""}" href="#finance/invoices?status=overdue" aria-label="View ${overdue.length} overdue invoices"><div class="ls-label">Overdue</div><div class="ls-value">${aed(overdue.reduce((s, d) => s + this.toAED(d, balance(d)), 0))}</div><div class="ls-note">${overdue.length ? `${overdue.length} past the due date` : "Nothing overdue"} · Click to view</div></a>
   <a class="ls" href="#finance/payments"><div class="ls-label">Received this month</div><div class="ls-value">${aed(received)}</div><div class="ls-note">Payments recorded in ${MONTHS_LONG[Number(month.slice(5)) - 1]}</div></a>
-  <div class="ls"><div class="ls-label">Drafts</div><div class="ls-value">${drafts}</div><div class="ls-note">${drafts ? "Counted in receivables until cancelled" : "No drafts"}</div></div>
-</div>` + this.filterBar(kind, { statuses: ["draft", "sent", "partial", "overdue", "paid", "credited", "cancelled"], people }) +
+  <a class="ls" href="#finance/invoices?status=draft" aria-label="View ${drafts} draft invoices"><div class="ls-label">Drafts</div><div class="ls-value">${drafts}</div><div class="ls-note">${drafts ? "Click to view draft invoices" : "No drafts"}</div></a>
+</div>` + this.filterBar(kind, { statuses: ["outstanding", "draft", "sent", "partial", "overdue", "paid", "credited", "cancelled"], people }) +
                 this.docTable([
                     { label: "Date", html: d => fmtDate(d.date) },
                     { label: "Number", html: d => `<b>${esc(d.number || "")}</b>` },
                     { label: "Customer", html: d => esc(d.party?.name || "—"), cls: "who" },
                     { label: "Due", html: d => `<span class="${effectiveStatus(d) === "overdue" ? "bad-text" : ""}">${fmtDate(d.due)}</span>` },
                     { label: "Total", num: true, html: d => this.money(this.docTotal(d), d.currency) },
-                    { label: "Balance due", num: true, html: d => invoiceBalance(d) > 0 ? this.money(invoiceBalance(d), d.currency) : '<span class="muted">0.00</span>' },
+                    { label: "Balance due", num: true, html: d => balance(d) > 0 ? this.money(balance(d), d.currency) : '<span class="muted">0.00</span>' },
                     { label: "Status", html: d => this.pill(effectiveStatus(d)) },
-                    { label: "", html: d => invoiceBalance(d) > 0 && canSales ? `<a class="btn btn-ghost btn-sm" href="#finance/payment/new?invoice=${esc(d.id)}">Record payment</a>` : "" }
+                    { label: "", html: d => balance(d) > 0 && canSales ? `<a class="btn btn-ghost btn-sm" href="#finance/payment/new?invoice=${esc(d.id)}">Record payment</a>` : "" }
                 ], list, all.length ? "No invoices match." : "No invoices yet. Create one here or on the document desk — it appears here and in the accounts straight away.");
         } else if (kind === "creditNote") {
             const issued = all.filter(d => !["draft", "cancelled"].includes(d.status));

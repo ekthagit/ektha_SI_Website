@@ -547,6 +547,7 @@ Deno.serve(async (req) => {
       const bills = records.bill || [];
       const expensesRows = records.expense || [];
       const payments = records.payment || [];
+      const billPayments = records.billPayment || [];
       const reconciliations = records.reconciliation || [];
       const rules = records.rule || [];
       const accounts = records.account || [];
@@ -591,7 +592,27 @@ Deno.serve(async (req) => {
         }
         return Math.max(0, total);
       };
+      // Payments are stored as separate records. Calculate the amount allocated to
+      // each invoice so a saved/stale balanceDue does not continue showing the full
+      // invoice total after a payment has been recorded.
+      const allocatedByInvoice = new Map<string, number>();
+      for (const payment of payments) {
+        const allocations = Array.isArray(payment.allocations) ? payment.allocations : [];
+        for (const allocation of allocations) {
+          const docId = String(allocation?.docId || "");
+          const applied = Math.max(0, amount(allocation?.amount));
+          if (!docId || applied <= 0) continue;
+          allocatedByInvoice.set(docId, (allocatedByInvoice.get(docId) || 0) + applied);
+        }
+      }
       const invoiceTotal = (d: any) => {
+        const allocated = allocatedByInvoice.get(String(d.id || "")) || 0;
+        if (allocated > 0) {
+          // Use the greater value rather than adding both, because some older
+          // invoice records may already have their paid field updated.
+          const paid = Math.max(amount(d.paid ?? d.amountPaid), allocated);
+          return Math.max(0, invoiceGrossTotal(d) - paid);
+        }
         const savedBalance = d.balanceDue ?? d.balance;
         if (savedBalance !== null && savedBalance !== undefined) return Math.max(0, amount(savedBalance));
         return Math.max(0, invoiceGrossTotal(d) - amount(d.paid ?? d.amountPaid));
@@ -623,14 +644,23 @@ Deno.serve(async (req) => {
       const cash = accounts.filter((a: any) => !a.archived && (a.subtype === "bank" || a.subtype === "cash"))
         .map((a: any) => ({ name: a.name || a.accountName || "Account", amount: amount(a.balance ?? a.openingBalance ?? a.base) }));
       const months = Array.from({ length: 6 }, (_, i) => shiftMonth(today, i - 5));
+      // Cash-basis dashboard trend: count income only when a customer payment
+      // was recorded, and count costs only when a bill payment or expense was
+      // recorded. Unpaid invoices and unpaid bills are not cash profit/loss.
       const trend = months.map((start: string) => {
         const next = shiftMonth(start, 1);
-        const inMonth = invoices.filter((d: any) => String(d.date || "").slice(0, 10) >= start && String(d.date || "").slice(0, 10) < next);
-        const outMonth = [...bills, ...expensesRows].filter((d: any) => String(d.date || "").slice(0, 10) >= start && String(d.date || "").slice(0, 10) < next);
+        const inMonth = (x: any) => {
+          const date = String(x.date || x.createdAt || x.created_at || "").slice(0, 10);
+          return date >= start && date < next;
+        };
+        const receivedInMonth = payments.filter(inMonth);
+        const paidBillsInMonth = billPayments.filter(inMonth);
+        const expensesInMonth = expensesRows.filter(inMonth);
         return {
           month: start.slice(0, 7),
-          income: inMonth.reduce((s: number, d: any) => s + invoiceGrossTotal(d), 0),
-          expense: outMonth.reduce((s: number, d: any) => s + amount(d.total ?? d.amount), 0),
+          income: receivedInMonth.reduce((s: number, p: any) => s + amount(p.amount ?? p.total), 0),
+          expense: [...paidBillsInMonth, ...expensesInMonth]
+            .reduce((s: number, x: any) => s + amount(x.amount ?? x.total), 0),
         };
       });
       const currentIncome = trend[trend.length - 1]?.income || 0;
@@ -756,8 +786,12 @@ Deno.serve(async (req) => {
       if (reportName === "trial_balance") return json({...base,rows:[],totals:{debit:0,credit:0,balanced:true}});
       if (reportName === "cash_flow") return json({...base,opening:0,sections:[{label:"Operating activities",rows:[],total:0},{label:"Investing activities",rows:[],total:0},{label:"Financing activities",rows:[],total:0}],net:0,closing:0});
       if (reportName === "profit_loss") {
-        const income=total(invoices.filter(inRange), (x:any)=>amount(x.total));
-        const costs=total([...bills.filter(inRange),...expenses], (x:any)=>amount(x.total ?? x.amount));
+        // Cash-basis P&L: income is customer payments actually received during
+        // the selected period; expenses are recorded expenses plus supplier
+        // bill payments actually made during that period. Invoice totals,
+        // outstanding receivables, and unpaid bills are excluded.
+        const income = total(payments, (x: any) => amount(x.amount ?? x.total));
+        const costs = total([...billPayments, ...expenses], (x: any) => amount(x.amount ?? x.total));
         return json({...base,sections:[{label:"Income",rows:[],total:income},{label:"Expenses",rows:[],total:costs},{label:"Net profit",total:income-costs,final:true}]});
       }
       if (reportName === "balance_sheet") return json({...base,sections:[{label:"Assets",rows:[],total:0},{label:"Liabilities",rows:[],total:0},{label:"Equity",rows:[],total:0,final:true}],balanced:true});
