@@ -475,6 +475,13 @@ const Finance = {
         const editing = id && id !== "new" ? (Server.fin.payment || []).find(p => p.id === id) : null;
         if (id && id !== "new" && !editing) { $("#finMain").innerHTML = `<div class="empty"><h2>Payment not found</h2></div>`; return; }
         const fromInv = this.params.get("invoice") ? Store.getDoc(this.params.get("invoice")) : null;
+        // Use payment allocations as the source of truth for paid and outstanding amounts.
+        const invoiceTotal = inv => round(computeTotals({ ...inv, paid: 0 }).total, decimalsFor(inv.currency || "AED"));
+        const allocatedToInvoice = (inv, excludePaymentId = null) => (Server.fin.payment || []).reduce((sum, payment) => {
+            if (excludePaymentId && payment.id === excludePaymentId) return sum;
+            return sum + (payment.allocations || []).reduce((part, allocation) => part + (allocation.docId === inv.id ? num(allocation.amount) : 0), 0);
+        }, 0);
+        const invoiceOwed = (inv, excludePaymentId = null) => Math.max(0, round(invoiceTotal(inv) - allocatedToInvoice(inv, excludePaymentId) - num(inv.credited), decimalsFor(inv.currency || "AED")));
         const pre = this.params.get("prefill") && this._prefill && String(this._prefill.id).startsWith("pay") ? this._prefill : null;
         const ret = this.params.get("back") || (fromInv ? "#create" : "#finance/payments");
         const deposit = this.bankAccounts();
@@ -482,9 +489,9 @@ const Finance = {
         const p = editing ? JSON.parse(JSON.stringify(editing)) : pre ? JSON.parse(JSON.stringify(pre)) : {
             id: uid("pay"), date: this.today(), contactName: fromInv?.party?.name || "", currency: fromInv?.currency || "AED",
             rate: fromInv ? (fromInv.currency === "AED" ? 1 : num(fromInv.fx?.rate) || this.rateFor(fromInv.currency)) : 1,
-            amount: fromInv ? invoiceBalance(fromInv) : "", bankCharges: 0,
+            amount: fromInv ? invoiceOwed(fromInv) : "", bankCharges: 0,
             accountId: (deposit.find(a => a.id === defDeposit && a.currency === (fromInv?.currency || "AED")) || deposit.find(a => a.subtype === "bank" && a.currency === (fromInv?.currency || "AED")) || deposit.find(a => a.currency === (fromInv?.currency || "AED")) || deposit[0] || {}).id,
-            method: "Bank transfer", reference: "", notes: "", allocations: fromInv ? [{ docId: fromInv.id, amount: invoiceBalance(fromInv) }] : []
+            method: "Bank transfer", reference: "", notes: "", allocations: fromInv ? [{ docId: fromInv.id, amount: invoiceOwed(fromInv) }] : []
         };
         const canEdit = Server.can("sales");
         const main = $("#finMain");
@@ -515,10 +522,12 @@ ${this.field("Notes", `<textarea name="notes" rows="2">${esc(p.notes || "")}</te
             // invoices already on this payment stay listed even when now fully paid
             (p.allocations || []).forEach(a => { const inv = Store.getDoc(a.docId); if (inv && !invs.includes(inv) && (inv.currency || "AED") === d.currency) invs.push(inv); });
             const amt = id => num((p.allocations.find(a => a.docId === id) || {}).amount);
-            $("#allocList").innerHTML = invs.length ? `<table class="dtable alloc-table"><thead><tr><th>Invoice</th><th>Date</th><th>Due</th><th class="num">Total</th><th class="num">Still owed</th><th class="num">Apply</th></tr></thead><tbody>${invs.map(inv => {
+            $("#allocList").innerHTML = invs.length ? `<table class="dtable alloc-table"><thead><tr><th>Invoice</th><th>Date</th><th>Due</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Still owed</th><th class="num">Apply</th></tr></thead><tbody>${invs.map(inv => {
                 const mine = editing ? num((editing.allocations || []).find(a => a.docId === inv.id)?.amount) : 0;
-                const owed = round(invoiceBalance(inv) + mine, decimalsFor(inv.currency));
-                return `<tr><td><b>${esc(inv.number)}</b></td><td>${fmtDate(inv.date)}</td><td class="${inv.due && inv.due < this.today() ? "warn-text" : ""}">${fmtDate(inv.due) || "—"}</td><td class="num">${fmt(computeTotals({ ...inv, paid: 0 }).total, inv.currency)}</td><td class="num">${fmt(owed, inv.currency)}</td>
+                const total = invoiceTotal(inv);
+                const owed = Math.max(0, round(invoiceOwed(inv, editing?.id) - 0, decimalsFor(inv.currency)));
+                const paid = Math.max(0, round(total - owed, decimalsFor(inv.currency)));
+                return `<tr><td><b>${esc(inv.number)}</b></td><td>${fmtDate(inv.date)}</td><td class="${inv.due && inv.due < this.today() ? "warn-text" : ""}">${fmtDate(inv.due) || "—"}</td><td class="num">${fmt(total, inv.currency)}</td><td class="num">${fmt(paid, inv.currency)}</td><td class="num">${fmt(owed, inv.currency)}</td>
                   <td class="num"><input class="alloc-in" data-inv="${inv.id}" data-max="${owed}" type="number" step="any" inputmode="decimal" value="${amt(inv.id) || ""}" aria-label="Amount applied to ${esc(inv.number)}" data-skip></td></tr>`;
             }).join("")}</tbody></table>` : `<p class="muted">${d.contactName ? `${esc(d.contactName)} has no open invoices in ${esc(d.currency)}. The whole amount is kept as customer credit.` : "Choose the customer to see their open invoices."}</p>`;
             $$(".alloc-in").forEach(inp => inp.addEventListener("input", () => { setAlloc(inp.dataset.inv, inp.value); sum(); }));
