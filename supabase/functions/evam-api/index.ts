@@ -561,7 +561,41 @@ Deno.serve(async (req) => {
         const n = Number(v);
         return Number.isFinite(n) ? n : 0;
       };
-      const invoiceTotal = (d: any) => amount(d.balanceDue ?? d.balance ?? Math.max(0, amount(d.total) - amount(d.paid)));
+      // Calculate an invoice's gross total from its line items when older/newer
+      // records do not persist a top-level total field.
+      const invoiceGrossTotal = (d: any) => {
+        const savedTotal = d.total ?? d.totalAmount ?? d.grandTotal;
+        if (savedTotal !== null && savedTotal !== undefined) return Math.max(0, amount(savedTotal));
+
+        const items = Array.isArray(d.items) ? d.items : [];
+        let total = items.reduce((sum: number, item: any) => {
+          const qty = amount(item.qty ?? item.quantity ?? 1);
+          const rate = amount(item.rate ?? item.price ?? item.unitPrice);
+          const gross = qty * rate;
+          const discountValue = amount(item.disc ?? item.discount);
+          const discountType = String(item.discType ?? item.discountType ?? "amt").toLowerCase();
+          const discount = discountType === "pct" || discountType === "percent"
+            ? gross * discountValue / 100
+            : discountValue;
+          const taxable = Math.max(0, gross - discount);
+          const vatRate = amount(item.vat ?? item.vatRate ?? item.taxRate);
+          return sum + taxable + taxable * vatRate / 100;
+        }, 0);
+
+        const invoiceDiscount = d.discount;
+        if (invoiceDiscount && typeof invoiceDiscount === "object") {
+          const value = amount(invoiceDiscount.value);
+          const type = String(invoiceDiscount.type ?? "amt").toLowerCase();
+          const discount = type === "pct" || type === "percent" ? total * value / 100 : value;
+          total = Math.max(0, total - discount);
+        }
+        return Math.max(0, total);
+      };
+      const invoiceTotal = (d: any) => {
+        const savedBalance = d.balanceDue ?? d.balance;
+        if (savedBalance !== null && savedBalance !== undefined) return Math.max(0, amount(savedBalance));
+        return Math.max(0, invoiceGrossTotal(d) - amount(d.paid ?? d.amountPaid));
+      };
       const billTotal = (d: any) => amount(d.balanceDue ?? d.balance ?? Math.max(0, amount(d.total) - amount(d.paid)));
       const overdue = (d: any) => !!d.due && String(d.due).slice(0, 10) < today;
       const openInvoices = invoices.filter((d: any) => invoiceTotal(d) > 0);
@@ -595,7 +629,7 @@ Deno.serve(async (req) => {
         const outMonth = [...bills, ...expensesRows].filter((d: any) => String(d.date || "").slice(0, 10) >= start && String(d.date || "").slice(0, 10) < next);
         return {
           month: start.slice(0, 7),
-          income: inMonth.reduce((s: number, d: any) => s + amount(d.total), 0),
+          income: inMonth.reduce((s: number, d: any) => s + invoiceGrossTotal(d), 0),
           expense: outMonth.reduce((s: number, d: any) => s + amount(d.total ?? d.amount), 0),
         };
       });
