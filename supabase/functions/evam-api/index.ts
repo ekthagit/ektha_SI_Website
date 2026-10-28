@@ -621,9 +621,49 @@ Deno.serve(async (req) => {
       const overdue = (d: any) => !!d.due && String(d.due).slice(0, 10) < today;
       const openInvoices = invoices.filter((d: any) => invoiceTotal(d) > 0);
       const openBills = bills.filter((d: any) => d.status !== "void" && billTotal(d) > 0);
+
+      // Apply issued credit notes only to the invoice they reference.
+      // This adjusts the dashboard's overall receivables figure without changing
+      // the existing overdue amount/count calculation.
+      const creditNotes = docs.filter((d: any) => {
+        const type = String(d.type || "").toLowerCase().replace(/[ _]/g, "-");
+        const status = String(d.status || "").toLowerCase();
+        return ["credit-note", "creditnote"].includes(type) &&
+          !["draft", "cancelled", "canceled", "void", "rejected"].includes(status);
+      });
+      const invoiceKey = (v: any) => String(v ?? "").trim().toLowerCase();
+      const creditNoteInvoiceKeys = (cn: any) => {
+        const linked = cn.invoice ?? cn.linkedInvoice ?? cn.relatedInvoice ?? {};
+        return [
+          cn.invoiceId, cn.invoice_id, cn.linkedInvoiceId, cn.linked_invoice_id,
+          cn.invoiceNumber, cn.invoice_number, cn.linkedInvoiceNumber, cn.linked_invoice_number,
+          cn.againstInvoice, cn.referenceInvoice, cn.reference, cn.ref,
+          typeof linked === "object" ? linked.id : linked,
+          typeof linked === "object" ? linked.number : "",
+          typeof linked === "object" ? linked.docNumber : "",
+        ].map(invoiceKey).filter(Boolean);
+      };
+      const invoiceReceivableAfterCredits = (invoice: any) => {
+        const keys = new Set([invoice.id, invoice.number, invoice.docNumber].map(invoiceKey).filter(Boolean));
+        const credit = creditNotes.reduce((sum: number, note: any) => {
+          const noteKeys = creditNoteInvoiceKeys(note);
+          const sameInvoice = noteKeys.some((key: string) => keys.has(key));
+          const sameCustomer = String(note.party?.name || note.contact || "").trim().toLowerCase() ===
+            String(invoice.party?.name || invoice.contact || "").trim().toLowerCase();
+          const sameCurrency = String(note.currency || "AED").toUpperCase() ===
+            String(invoice.currency || "AED").toUpperCase();
+          if (!sameInvoice || !sameCustomer || !sameCurrency) return sum;
+          return sum + invoiceGrossTotal(note);
+        }, 0);
+        return Math.max(0, invoiceTotal(invoice) - credit);
+      };
+      const receivablesInvoices = openInvoices
+        .map((invoice: any) => ({ invoice, balance: invoiceReceivableAfterCredits(invoice) }))
+        .filter((entry: any) => entry.balance > 0.005);
       const receivables = {
-        total: openInvoices.reduce((s: number, d: any) => s + invoiceTotal(d), 0),
-        count: openInvoices.length,
+        total: receivablesInvoices.reduce((s: number, entry: any) => s + entry.balance, 0),
+        count: receivablesInvoices.length,
+        // Intentionally preserve the existing overdue calculation and count.
         overdue: openInvoices.filter(overdue).reduce((s: number, d: any) => s + invoiceTotal(d), 0),
         overdueCount: openInvoices.filter(overdue).length,
         advances: 0,
@@ -675,9 +715,10 @@ Deno.serve(async (req) => {
         others: 0,
       };
       const debtorMap = new Map<string, number>();
-      for (const d of openInvoices) {
+      for (const entry of receivablesInvoices) {
+        const d = entry.invoice;
         const contact = String(d.party?.name || d.contact || "Unknown customer");
-        debtorMap.set(contact, (debtorMap.get(contact) || 0) + invoiceTotal(d));
+        debtorMap.set(contact, (debtorMap.get(contact) || 0) + entry.balance);
       }
       const topDebtors = [...debtorMap.entries()].map(([contact, value]) => ({ contact, amount: value }))
         .sort((a, b) => b.amount - a.amount).slice(0, 5);

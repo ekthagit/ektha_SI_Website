@@ -1856,15 +1856,43 @@ function renderDocsView() {
     renderDocsTable();
 }
 
-// Match the Finance > Invoices balance calculation when connected to Supabase.
+// Match Finance > Invoices: include issued credit notes linked to this invoice.
 function documentsInvoiceBalance(d) {
     if (!d || d.status === "cancelled") return 0;
-    if (!Server.online) return invoiceBalance(d);
+
     const total = computeTotals({ ...d, paid: 0 }).total;
+    const credited = Math.max(0, num(d.credited));
+
+    // Credit notes must reference this exact invoice and match its customer/currency.
+    // Ignore drafts, cancelled notes, and notes saved as unlinked customer credit.
+    const norm = value => String(value ?? "").trim().toLowerCase();
+    const linkedCreditTotal = (Store.data.docs || []).reduce((sum, creditNote) => {
+        if (creditNote.type !== "creditNote") return sum;
+        if (["draft", "cancelled"].includes(String(creditNote.status || "").toLowerCase())) return sum;
+        if (creditNote.unlinked) return sum;
+        if (norm(creditNote.ref) !== norm(d.number)) return sum;
+        if (norm(creditNote.party?.name) !== norm(d.party?.name)) return sum;
+        if (String(creditNote.currency || "AED").toUpperCase() !== String(d.currency || "AED").toUpperCase()) return sum;
+        return sum + Math.max(0, computeTotals({ ...creditNote, paid: 0 }).total);
+    }, 0);
+
+    // Avoid double-deducting credits already reflected in d.credited.
+    const creditApplied = Math.max(credited, linkedCreditTotal);
+
+    if (!Server.online) {
+        // invoiceBalance already accounts for saved payments/credits locally.
+        // Deduct only the linked credit-note amount not already included in credited.
+        return Math.max(0, round(
+            invoiceBalance(d) - Math.max(0, linkedCreditTotal - credited),
+            decimalsFor(d.currency || "AED")
+        ));
+    }
+
     const allocated = (Server.fin.payment || []).reduce((sum, payment) =>
         sum + (payment.allocations || []).reduce((part, allocation) =>
             part + (allocation.docId === d.id ? num(allocation.amount) : 0), 0), 0);
-    return Math.max(0, round(total - allocated - num(d.credited), decimalsFor(d.currency || "AED")));
+
+    return Math.max(0, round(total - allocated - creditApplied, decimalsFor(d.currency || "AED")));
 }
 
 function renderLedgerStrip() {

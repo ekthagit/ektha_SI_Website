@@ -65,17 +65,32 @@ ${people.length ? `<select id="sdWho" aria-label="${personLabel}"><option value=
         const q = (p.get("q") || "").toLowerCase(), st = p.get("status") || "", who = p.get("who") || "";
         const types = kind === "quotes" ? ["quotation", "proforma", "salesOrder"] : [kind];
         const all = Store.data.docs.filter(d => types.includes(d.type));
-        // Use saved payment allocations to determine whether an invoice still has a balance.
+        // Use the same credit-note-adjusted balance for the Outstanding filter
+        // as the invoice KPI and balance-due column.
         const isOutstanding = d => {
             if (d.status === "cancelled") return false;
             const total = this.docTotal(d);
             const allocated = (Server.fin.payment || []).reduce((sum, payment) =>
                 sum + (payment.allocations || []).reduce((part, allocation) =>
                     part + (allocation.docId === d.id ? num(allocation.amount) : 0), 0), 0);
-            return Math.max(0, round(total - allocated - num(d.credited), decimalsFor(d.currency || "AED"))) > 0;
+            const linkedCreditNotes = Store.data.docs.filter(c =>
+                c.type === "creditNote" &&
+                !["draft", "cancelled"].includes(c.status) &&
+                !c.unlinked &&
+                this.sameName(c.ref, d.number) &&
+                this.sameName(c.party?.name, d.party?.name) &&
+                (c.currency || "AED") === (d.currency || "AED")
+            );
+            const linkedCreditTotal = linkedCreditNotes.reduce((sum, c) => sum + this.docTotal(c), 0);
+            const creditApplied = Math.max(num(d.credited), linkedCreditTotal);
+            return Math.max(0, round(total - allocated - creditApplied, decimalsFor(d.currency || "AED"))) > 0;
         };
         const match = d => (!q || [d.number, d.party?.name, d.ref, d.poNumber, d.subject].join(" ").toLowerCase().includes(q))
-            && (!st || (kind === "invoice" && st === "outstanding" ? isOutstanding(d) : effectiveStatus(d) === st))
+            && (!st || (kind === "invoice" && st === "outstanding"
+                ? isOutstanding(d)
+                : kind === "invoice" && st === "overdue"
+                    ? isOutstanding(d) && effectiveStatus(d) === "overdue"
+                    : effectiveStatus(d) === st))
             && (!who || this.sameName(d.party?.name, who));
         const list = all.filter(match).sort((a, b) => (b.date || "").localeCompare(a.date || "") || String(b.number || "").localeCompare(String(a.number || "")));
         const people = [...new Map(all.filter(d => d.party?.name).map(d => [d.party.name.trim().toLowerCase(), d.party.name.trim()])).values()].sort((a, b) => a.localeCompare(b));
@@ -86,19 +101,36 @@ ${people.length ? `<select id="sdWho" aria-label="${personLabel}"><option value=
         if (kind === "invoice") {
             // Online payments are stored separately from invoice documents. Use saved
             // allocations as the source of truth for balances shown on this page.
+            // Apply issued credit notes to the specific invoice they reference.
+            // Use the greater of the saved credited amount and linked credit-note
+            // totals so the same credit is not deducted twice if d.credited already
+            // contains that credit note.
+            const creditApplied = d => {
+                const linkedCreditNotes = Store.data.docs.filter(c =>
+                    c.type === "creditNote" &&
+                    !["draft", "cancelled"].includes(c.status) &&
+                    !c.unlinked &&
+                    this.sameName(c.ref, d.number) &&
+                    this.sameName(c.party?.name, d.party?.name) &&
+                    (c.currency || "AED") === (d.currency || "AED")
+                );
+                const linkedTotal = linkedCreditNotes.reduce((sum, c) => sum + this.docTotal(c), 0);
+                return Math.max(num(d.credited), linkedTotal);
+            };
             const balance = d => {
                 if (d.status === "cancelled") return 0;
                 const total = this.docTotal(d);
                 const allocated = (Server.fin.payment || []).reduce((sum, p) =>
                     sum + (p.allocations || []).reduce((part, a) =>
                         part + (a.docId === d.id ? num(a.amount) : 0), 0), 0);
-                return Math.max(0, round(total - allocated - num(d.credited), decimalsFor(d.currency || "AED")));
+                return Math.max(0, round(total - allocated - creditApplied(d), decimalsFor(d.currency || "AED")));
             };
             const open = all.filter(d => d.status !== "cancelled" && balance(d) > 0);
+            // Overdue totals use the same credit-adjusted invoice balances.
             const overdue = open.filter(d => effectiveStatus(d) === "overdue");
             const month = this.today().slice(0, 7);
             const received = (Server.fin.payment || []).filter(x => (x.date || "").startsWith(month)).reduce((s, x) => s + num(x.amount) * ((x.currency || "AED") === "AED" ? 1 : num(x.rate) || num(LiveFX.rate(x.currency)) || 0), 0);
-            const drafts = all.filter(d => d.status === "draft").length;
+            const drafts = all.filter(d => d.status === "draft" && effectiveStatus(d) === "draft").length;
             // Credit notes kept as customer credit (no invoice of that customer to reduce)
             const looseCredit = Store.data.docs.filter(c => c.type === "creditNote" && c.status !== "cancelled" && (c.unlinked || !all.some(i => this.sameName(i.number, c.ref) && this.sameName(i.party?.name, c.party?.name) && (i.currency || "AED") === (c.currency || "AED"))))
                 .reduce((s, c) => s + this.toAED(c, this.docTotal(c)), 0);
