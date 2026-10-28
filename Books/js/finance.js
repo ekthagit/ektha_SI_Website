@@ -437,6 +437,17 @@ const Finance = {
        ========================================================== */
     pagePayments() {
         const list = (Server.fin.payment || []).slice().sort((a, b) => (b.date || "").localeCompare(a.date || "") || String(b.number).localeCompare(String(a.number)));
+        // Correct the one known mis-entered payment: only AED 20,000 was received
+        // and allocated to INV-26/10/005; AED 6,250 is still owed on the invoice.
+        // Do not apply this rule to other payments, where unapplied customer credit may be valid.
+        const paymentAmountForDisplay = p => {
+            const allocations = p.allocations || [];
+            const allocated = round(allocations.reduce((sum, a) => sum + num(a.amount), 0), 2);
+            const isKnownCorrection = num(p.amount) === 26250 && allocations.length === 1
+                && allocations[0].docId === "dmvqnrmrembkrf" && num(allocations[0].amount) === 20000
+                && allocated === 20000;
+            return isKnownCorrection ? 20000 : num(p.amount);
+        };
         const q = (this.params.get("q") || "").toLowerCase();
         const rows = list.filter(p => !q || [p.number, p.contactName, p.reference].join(" ").toLowerCase().includes(q));
         $("#finMain").innerHTML = this.head("Payments received", "Money in from customers, applied to their invoices.", Server.can("sales") ? this.link("Record payment", "#finance/payment/new") : "") +
@@ -447,8 +458,8 @@ const Finance = {
                 { label: "Customer", html: p => esc(p.contactName || ""), cls: "who" },
                 { label: "Invoices", html: p => esc((p.allocations || []).map(a => Store.getDoc(a.docId)?.number || "?").join(", ")) || '<span class="muted">—</span>', cls: "who" },
                 { label: "Deposited to", html: p => esc(this.accountName(p.accountId)) },
-                { label: "Amount", num: true, html: p => this.money(p.amount, p.currency) },
-                { label: "Unapplied", num: true, html: p => { const u = round(num(p.amount) - (p.allocations || []).reduce((s, a) => s + num(a.amount), 0), 2); return u > 0 ? `<span class="pill pill-warn">${fmt(u, p.currency)}</span>` : '<span class="muted">—</span>'; } }
+                { label: "Amount", num: true, html: p => this.money(paymentAmountForDisplay(p), p.currency) },
+                { label: "Unapplied", num: true, html: p => { const u = round(paymentAmountForDisplay(p) - (p.allocations || []).reduce((s, a) => s + num(a.amount), 0), 2); return u > 0 ? `<span class="pill pill-warn">${fmt(u, p.currency)}</span>` : '<span class="muted">—</span>'; } }
             ], rows, { empty: "No payments recorded yet. Record a payment from an invoice or with the button above.", onRow: p => p.id });
         this.bindRows("#finance/payment/");
         this.bindSearch();
@@ -493,6 +504,12 @@ const Finance = {
             accountId: (deposit.find(a => a.id === defDeposit && a.currency === (fromInv?.currency || "AED")) || deposit.find(a => a.subtype === "bank" && a.currency === (fromInv?.currency || "AED")) || deposit.find(a => a.currency === (fromInv?.currency || "AED")) || deposit[0] || {}).id,
             method: "Bank transfer", reference: "", notes: "", allocations: fromInv ? [{ docId: fromInv.id, amount: invoiceOwed(fromInv) }] : []
         };
+        // Prefill the corrected received amount when editing the specific known bad record.
+        // Saving this form persists the correction; the invoice balance remains allocation-based.
+        if (editing && num(p.amount) === 26250 && (p.allocations || []).length === 1
+            && p.allocations[0].docId === "dmvqnrmrembkrf" && num(p.allocations[0].amount) === 20000) {
+            p.amount = 20000;
+        }
         const canEdit = Server.can("sales");
         const main = $("#finMain");
         main.innerHTML = this.formShell(editing ? `Payment ${esc(p.number || "")}` : "Record payment received", fromInv ? `For invoice ${esc(fromInv.number)} · ${esc(fromInv.party?.name || "")}` : "Money in from a customer. Apply it to one or more of their invoices.", `
