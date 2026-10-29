@@ -8,7 +8,7 @@
 
 const ONLINE_CACHE = "evambooks.cache";
 const QUEUE_KEY = "evambooks.queue";
-const FIN_KINDS = ["payment", "billPayment", "bill", "vendorCredit", "expense", "journal", "transfer", "bankEntry", "account", "rule", "recurring", "reconciliation", "reminder", "employee", "payrun"];
+const FIN_KINDS = ["payment", "billPayment", "bill", "vendorCredit", "expense", "journal", "transfer", "bankEntry", "bankTxn", "account", "rule", "recurring", "reconciliation", "reminder", "employee", "payrun"];
 
 const Server = {
     online: false,
@@ -40,7 +40,7 @@ const Server = {
         const routeRoot = normalizedPath.split(/[/?#]/, 1)[0];
         const useSupabaseFunction =
             normalizedPath.startsWith("hr/") ||
-            normalizedPath === "bank/balances" ||
+            normalizedPath.startsWith("bank/") ||
             normalizedPath.startsWith("reports/") ||
             ["users", "security", "audit", "reminders"].includes(routeRoot);
 
@@ -643,10 +643,12 @@ const Auth = {
         SyncBadge.mount();
         try { Server.queue = JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]"); } catch { Server.queue = []; }
         Server.flush();
-        if (!Server._polling) {
-            Server._polling = setInterval(() => Server.poll(), 30000);
-            document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") Server.poll(); });
-            window.addEventListener("online", () => { Server.flush(); Server.poll(); });
+        // Do not refresh records automatically in the background.
+        // Data is loaded at startup/sign-in; use the browser's manual Refresh
+        // to fetch the latest records. Still retry pending saves when online.
+        if (!Server._onlineFlushListener) {
+            window.addEventListener("online", () => Server.flush());
+            Server._onlineFlushListener = true;
         }
         // Legacy server-side import flow is disabled during Supabase migration.
     },

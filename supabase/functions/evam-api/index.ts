@@ -419,6 +419,162 @@ Deno.serve(async (req) => {
     }
 
 
+
+    // Banking statement lines are stored per user in books_records as bankTxn records.
+    // These endpoints intentionally do not change account balances or accounting totals.
+    if (root === "bank") {
+      const canBank = roles.some(r => ["owner", "admin", "finance", "accountant", "staff"].includes(r));
+      if (!canBank) return fail("Your role does not have permission to access banking.", 403);
+      const readRecords = async (types: string[]) => {
+        const { data, error } = await supabase.from("books_records")
+          .select("record_type,record_key,data,updated_at")
+          .eq("user_id", user.id).in("record_type", types);
+        if (error) throw new Error(error.message);
+        return (data || []).map((r: any) => ({ ...asObject(r.data), id: r.record_key, kind: r.record_type }));
+      };
+      const saveRecord = async (type: string, value: any) => {
+        const id = String(value.id || uid("bank_"));
+        const data = { ...value, id };
+        const { error } = await supabase.from("books_records").upsert({
+          user_id: user.id, record_type: type, record_key: id, data,
+          updated_at: new Date().toISOString()
+        }, { onConflict: "user_id,record_type,record_key" });
+        if (error) throw new Error(error.message);
+        return data;
+      };
+      const getTxn = async (id: string) => (await readRecords(["bankTxn"])).find((t: any) => String(t.id) === id);
+      const acctId = parts[1] === "accounts" ? String(parts[2] || "") : "";
+      if (parts[1] === "balances" && method === "GET") {
+        const records = await readRecords(["account", "bankTxn", "reconciliation"]);
+        const accounts = records.filter((a: any) => a.kind === "account" && !a.archived &&
+          (a.subtype === "bank" || a.subtype === "cash" || a.bankAccount === true));
+        const txns = records.filter((t: any) => t.kind === "bankTxn");
+        return json({ accounts: accounts.map((a: any) => {
+          const lines = txns.filter((t: any) => t.bankAccountId === a.id);
+          return {
+            id: a.id,
+            base: Number(a.base ?? a.balance ?? a.openingBalance ?? 0) || 0,
+            balance: Number(a.balance ?? a.openingBalance ?? a.base ?? 0) || 0,
+            unmatched: lines.filter((t: any) => ["new", "suggested"].includes(t.status)).length,
+            statementBalance: a.statementBalance == null ? null : Number(a.statementBalance),
+            statementDate: a.statementDate || null
+          };
+        }) });
+      }
+      if (parts[1] === "accounts" && parts[3] === "txns" && method === "GET") {
+        const status = String(body.status || "new");
+        let txns = (await readRecords(["bankTxn"])).filter((t: any) => String(t.bankAccountId) === acctId);
+        if (status !== "all") txns = txns.filter((t: any) => status === "new" ? ["new", "suggested"].includes(t.status || "new") : t.status === status);
+        txns.sort((a: any, b: any) => String(b.date || "").localeCompare(String(a.date || "")));
+        return json({ txns });
+      }
+      if (parts[1] === "accounts" && parts[3] === "import" && method === "POST") {
+        const rows = Array.isArray(body.rows) ? body.rows : [];
+        const existing = (await readRecords(["bankTxn"])).filter((t: any) => String(t.bankAccountId) === acctId);
+        const signatures = new Set(existing.map((t: any) => `${t.date}|${Number(t.amount).toFixed(2)}|${String(t.description || "").trim().toLowerCase()}|${String(t.reference || "").trim()}`));
+        let added = 0, duplicates = 0, invalid = 0;
+        for (const row of rows) {
+          const date = String(row.date || "").slice(0, 10);
+          const amount = Number(row.amount);
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(amount)) { invalid++; continue; }
+          const signature = `${date}|${amount.toFixed(2)}|${String(row.description || "").trim().toLowerCase()}|${String(row.reference || "").trim()}`;
+          if (signatures.has(signature)) { duplicates++; continue; }
+          signatures.add(signature);
+          await saveRecord("bankTxn", {
+            id: uid("btxn_"), bankAccountId: acctId, date,
+            description: String(row.description || ""), reference: String(row.reference || ""),
+            amount, balance: row.balance === "" || row.balance == null ? null : Number(row.balance),
+            status: "new", suggestion: null, link_kind: null, link_id: null,
+            reconciliation_id: null, createdAt: now
+          });
+          added++;
+        }
+        return json({ added, duplicates, invalid, auto: 0 });
+      }
+      if (parts[1] === "accounts" && parts[3] === "rules" && method === "POST") {
+        const rules = (await readRecords(["rule"])).filter((r: any) => r.active !== false);
+        const txns = (await readRecords(["bankTxn"])).filter((t: any) => t.bankAccountId === acctId && ["new", "suggested"].includes(t.status || "new"));
+        let auto = 0, suggested = 0;
+        for (const t of txns) {
+          const rule = rules.sort((a: any,b: any) => Number(a.priority || 0)-Number(b.priority || 0)).find((r: any) => {
+            if (r.accountId && r.accountId !== acctId) return false;
+            if (r.direction === "in" && t.amount <= 0) return false;
+            if (r.direction === "out" && t.amount >= 0) return false;
+            const conditions = Array.isArray(r.conditions) ? r.conditions : [];
+            const tests = conditions.filter((c: any) => c.value).map((c: any) => {
+              const field = String(c.field || "description") === "reference" ? t.reference : t.description;
+              const val = String(c.value).toLowerCase(), src = String(field || "").toLowerCase();
+              return c.op === "equals" ? src === val : c.op === "starts" ? src.startsWith(val) : src.includes(val);
+            });
+            return tests.length > 0 && (r.match === "any" ? tests.some(Boolean) : tests.every(Boolean));
+          });
+          if (rule) { t.suggestion = { accountId: rule.targetAccount, ruleName: rule.name, vatRate: rule.vatRate, contactName: rule.contactName, memo: rule.memo }; t.status = rule.auto ? "categorized" : "suggested"; await saveRecord("bankTxn", t); if (rule.auto) auto++; else suggested++; }
+        }
+        return json({ auto, suggested });
+      }
+      if (parts[1] === "txns" && parts[2]) {
+        const id = parts[2];
+        const txn = await getTxn(id);
+        if (!txn) return fail("Bank transaction not found.", 404);
+        if (parts[3] === "suggestions" && method === "GET") {
+          const records = await readRecords(["payment", "billPayment", "expense", "transfer", "bankEntry", "journal", "doc", "bill"]);
+          const amount = Math.abs(Number(txn.amount || 0));
+          const dateMs = Date.parse(`${txn.date}T00:00:00Z`);
+          const matches = records.filter((r: any) => ["payment", "billPayment", "expense", "transfer", "bankEntry", "journal"].includes(r.kind))
+            .filter((r: any) => Math.abs(Math.abs(Number(r.amount ?? r.total ?? 0)) - amount) < 0.01 &&
+              Math.abs(Date.parse(`${String(r.date || "").slice(0,10)}T00:00:00Z`) - dateMs) <= 15*86400000)
+            .map((r: any) => ({ kind: r.kind, id: r.id, date: r.date, contact: r.contactName || r.vendorName || r.contact || "", memo: r.memo || r.reference || "" }));
+          const isIn = Number(txn.amount) > 0;
+          const open = records.filter((r: any) => (isIn ? r.kind === "doc" && r.type === "invoice" : r.kind === "bill"))
+            .filter((r: any) => Number(r.balanceDue ?? r.balance ?? (Number(r.total || 0)-Number(r.paid || 0))) >= amount && amount > 0)
+            .map((r: any) => ({ id:r.id, number:r.number || r.id, contact:r.contact || r.party?.name || r.vendorName || "", due:r.due || r.date }));
+          return json({ matches, open });
+        }
+        if (parts[3] === "exclude" && method === "POST") {
+          txn.status = body.excluded ? "excluded" : "new";
+          if (!body.excluded) { txn.link_kind = null; txn.link_id = null; txn.suggestion = null; }
+          await saveRecord("bankTxn", txn); return json({ ok: true, txn });
+        }
+        if (parts[3] === "match" && method === "POST") {
+          const kind = String(body.kind || ""), linkId = String(body.id || "");
+          if (!kind || !linkId) return fail("Choose a record to match.");
+          txn.status = "matched"; txn.link_kind = kind; txn.link_id = linkId;
+          await saveRecord("bankTxn", txn); return json({ ok: true, txn });
+        }
+        if (parts[3] === "unmatch" && method === "POST") {
+          txn.status = "new"; txn.link_kind = null; txn.link_id = null; txn.reconciliation_id = null;
+          await saveRecord("bankTxn", txn); return json({ ok: true, txn });
+        }
+      }
+      if (parts[1] === "accounts" && parts[3] === "reconcile" && method === "GET") {
+        const all = await readRecords(["bankTxn", "reconciliation"]);
+        const txns = all.filter((t: any) => t.kind === "bankTxn" && t.bankAccountId === acctId);
+        const history = all.filter((r: any) => r.kind === "reconciliation" && r.bankAccountId === acctId).sort((a: any,b: any)=>String(b.date||"").localeCompare(String(a.date||"")));
+        const pending = txns.filter((t: any) => !t.reconciliation_id && t.status !== "excluded").sort((a: any,b: any)=>String(a.date||"").localeCompare(String(b.date||"")));
+        return json({ pending, history, last: history[0] || null, unmatched: txns.filter((t: any)=>["new","suggested"].includes(t.status||"new")).length });
+      }
+      if (parts[1] === "accounts" && parts[3] === "reconcile" && method === "POST") {
+        const ids = Array.isArray(body.txnIds) ? body.txnIds.map(String) : [];
+        if (!body.statementDate || !Number.isFinite(Number(body.closingBalance))) return fail("Statement date and closing balance are required.");
+        const recId = uid("rec_");
+        const rec = { id: recId, bankAccountId: acctId, date: String(body.statementDate), openingBalance: Number(body.openingBalance || 0), closingBalance: Number(body.closingBalance), count: ids.length, createdAt: now };
+        await saveRecord("reconciliation", rec);
+        for (const id of ids) { const t = await getTxn(id); if (t && t.bankAccountId === acctId) { t.reconciliation_id = recId; await saveRecord("bankTxn", t); } }
+        return json({ ok: true, reconciliation: rec });
+      }
+      if (parts[1] === "reconciliations" && parts[2] && parts[3] === "undo" && method === "POST") {
+        const rec = (await readRecords(["reconciliation"])).find((r: any) => r.id === parts[2]);
+        if (!rec) return fail("Reconciliation not found.", 404);
+        const txns = (await readRecords(["bankTxn"])).filter((t: any) => t.reconciliation_id === rec.id);
+        for (const t of txns) { t.reconciliation_id = null; await saveRecord("bankTxn", t); }
+        const { error } = await supabase.from("books_records").delete().eq("user_id", user.id).eq("record_type", "reconciliation").eq("record_key", rec.id);
+        if (error) return fail(error.message, 500);
+        return json({ ok: true });
+      }
+      return fail(`Unsupported banking operation: ${method} ${path}`, 404);
+    }
+
+
     // Payment reminders use the signed-in user's existing books_records data.
     if (root === "reminders" && parts[1] === "due" && method === "GET") {
       const { data: records, error: recordsError } = await supabase
@@ -617,10 +773,79 @@ Deno.serve(async (req) => {
         if (savedBalance !== null && savedBalance !== undefined) return Math.max(0, amount(savedBalance));
         return Math.max(0, invoiceGrossTotal(d) - amount(d.paid ?? d.amountPaid));
       };
-      const billTotal = (d: any) => amount(d.balanceDue ?? d.balance ?? Math.max(0, amount(d.total) - amount(d.paid)));
+      // Bill balance: include supplier payments when the bill's saved balance/status
+      // is stale. Match payments to bills by their supported ID/reference fields.
+      const billGrossTotal = (d: any) => {
+        const savedTotal = d.total ?? d.totalAmount ?? d.grandTotal;
+        if (savedTotal !== null && savedTotal !== undefined) return Math.max(0, amount(savedTotal));
+        const items = Array.isArray(d.items) ? d.items : [];
+        let total = items.reduce((sum: number, item: any) => {
+          const qty = amount(item.qty ?? item.quantity ?? 1);
+          const rate = amount(item.rate ?? item.price ?? item.unitPrice);
+          const gross = qty * rate;
+          const discountValue = amount(item.disc ?? item.discount);
+          const discountType = String(item.discType ?? item.discountType ?? "amt").toLowerCase();
+          const discount = ["pct", "percent"].includes(discountType) ? gross * discountValue / 100 : discountValue;
+          const taxable = Math.max(0, gross - discount);
+          const vatRate = amount(item.vat ?? item.vatRate ?? item.taxRate);
+          return sum + taxable + taxable * vatRate / 100;
+        }, 0);
+        const discount = d.discount;
+        if (discount && typeof discount === "object") {
+          const value = amount(discount.value);
+          const type = String(discount.type ?? "amt").toLowerCase();
+          total = Math.max(0, total - (["pct", "percent"].includes(type) ? total * value / 100 : value));
+        }
+        return Math.max(0, total);
+      };
+      const billPaymentAmounts = new Map<string, number>();
+      const billKey = (v: any) => String(v ?? "").trim().toLowerCase();
+      for (const payment of billPayments) {
+        const paidAmount = Math.max(0, amount(payment.amount ?? payment.total ?? payment.paidAmount));
+        const linked = payment.bill ?? payment.linkedBill ?? payment.document ?? {};
+        const directKeys = [
+          payment.billId, payment.bill_id, payment.docId, payment.documentId,
+          payment.billNumber, payment.bill_number, payment.referenceBill,
+          typeof linked === "object" ? linked.id : linked,
+          typeof linked === "object" ? linked.number : "",
+          typeof linked === "object" ? linked.docNumber : "",
+        ].map(billKey).filter(Boolean);
+        const allocations = Array.isArray(payment.allocations) ? payment.allocations : [];
+        if (allocations.length) {
+          for (const allocation of allocations) {
+            const allocationAmount = Math.max(0, amount(allocation?.amount ?? allocation?.paidAmount));
+            const keys = [
+              allocation?.billId, allocation?.bill_id, allocation?.docId,
+              allocation?.documentId, allocation?.billNumber,
+            ].map(billKey).filter(Boolean);
+            for (const key of new Set(keys)) {
+              billPaymentAmounts.set(key, (billPaymentAmounts.get(key) || 0) + allocationAmount);
+            }
+          }
+        } else if (directKeys.length && paidAmount > 0) {
+          for (const key of new Set(directKeys)) {
+            billPaymentAmounts.set(key, (billPaymentAmounts.get(key) || 0) + paidAmount);
+          }
+        }
+      }
+      const billTotal = (d: any) => {
+        const status = String(d.status || "").trim().toLowerCase();
+        if (["paid", "void", "cancelled", "canceled", "draft"].includes(status)) return 0;
+        const gross = billGrossTotal(d);
+        const keys = [d.id, d.number, d.docNumber, d.billNumber].map(billKey).filter(Boolean);
+        const recordedPayments = Math.max(0, amount(d.paid ?? d.amountPaid),
+          ...keys.map((key: string) => billPaymentAmounts.get(key) || 0));
+        const calculatedBalance = Math.max(0, gross - recordedPayments);
+        const savedBalance = d.balanceDue ?? d.balance;
+        if (savedBalance !== null && savedBalance !== undefined) {
+          // A saved balance must not resurrect a bill already fully paid via a payment record.
+          return Math.min(Math.max(0, amount(savedBalance)), calculatedBalance);
+        }
+        return calculatedBalance;
+      };
       const overdue = (d: any) => !!d.due && String(d.due).slice(0, 10) < today;
       const openInvoices = invoices.filter((d: any) => invoiceTotal(d) > 0);
-      const openBills = bills.filter((d: any) => d.status !== "void" && billTotal(d) > 0);
+      const openBills = bills.filter((d: any) => billTotal(d) > 0);
 
       // Apply issued credit notes only to the invoice they reference.
       // This adjusts the dashboard's overall receivables figure without changing
@@ -673,7 +898,7 @@ Deno.serve(async (req) => {
         .filter((d: any) => !!d.due && String(d.due).slice(0, 10) >= today && String(d.due).slice(0, 10) <= dueSoonEnd)
         .sort((a: any, b: any) => String(a.due).localeCompare(String(b.due)))
         .slice(0, 8)
-        .map((d: any) => ({ id: d.id, due: d.due, contact: d.contact || d.party?.name || "Supplier", number: d.number || "", balance: billTotal(d), currency: d.currency || "AED" }));
+        .map((d: any) => ({ id: d.id, due: d.due, contact: d.contact || d.party?.name || d.vendorName || d.contactName || d.vendor?.name || "Supplier", number: d.number || "", balance: billTotal(d), currency: d.currency || "AED" }));
       const payables = {
         total: openBills.reduce((s: number, d: any) => s + billTotal(d), 0),
         count: openBills.length,
@@ -707,12 +932,25 @@ Deno.serve(async (req) => {
       const currentExpense = trend[trend.length - 1]?.expense || 0;
       const monthExpenses = expensesRows.filter((e: any) => String(e.date || "").slice(0, 10) >= monthStart && String(e.date || "").slice(0, 10) <= today);
       const lastMonthStart = shiftMonth(today, -1);
+      const expenseThisMonthTotal = monthExpenses.reduce((s: number, e: any) => s + amount(e.amount ?? e.total), 0);
+      // Build the category breakdown from the same month-filtered expense records
+      // used by the dashboard KPI, so the card and the total stay in sync.
+      const expenseCategoryTotals = new Map<string, number>();
+      for (const e of monthExpenses) {
+        const category = String(e.category || e.accountName || e.account || "Uncategorised");
+        expenseCategoryTotals.set(category, (expenseCategoryTotals.get(category) || 0) + amount(e.amount ?? e.total));
+      }
+      const sortedExpenseCategories = [...expenseCategoryTotals.entries()]
+        .map(([name, value]) => ({ id: "", name, amount: value }))
+        .sort((a, b) => b.amount - a.amount);
+      const expenseTopCategories = sortedExpenseCategories.slice(0, 6);
+      const expenseOtherTotal = sortedExpenseCategories.slice(6).reduce((sum, item) => sum + item.amount, 0);
       const expenses = {
-        thisMonth: monthExpenses.reduce((s: number, e: any) => s + amount(e.amount ?? e.total), 0),
+        thisMonth: expenseThisMonthTotal,
         lastMonth: expensesRows.filter((e: any) => String(e.date || "").slice(0, 10) >= lastMonthStart && String(e.date || "").slice(0, 10) < monthStart)
           .reduce((s: number, e: any) => s + amount(e.amount ?? e.total), 0),
-        top: [],
-        others: 0,
+        top: expenseTopCategories,
+        others: expenseOtherTotal,
       };
       const debtorMap = new Map<string, number>();
       for (const entry of receivablesInvoices) {
@@ -757,7 +995,7 @@ Deno.serve(async (req) => {
       const dateOf = (x: any) => String(x.date || x.createdAt || x.created_at || "").slice(0, 10);
       const inRange = (x: any) => { const d = dateOf(x); return d && d >= from && d <= to; };
       const docs = all.filter((x: any) => x.kind === "doc");
-      const invoices = docs.filter((x: any) => x.type === "invoice" && !["cancelled", "void"].includes(String(x.status || "").toLowerCase()));
+      const invoices = docs.filter((x: any) => String(x.type || "").toLowerCase().replace(/[ _]/g, "-") === "invoice" && !["cancelled", "canceled", "void"].includes(String(x.status || "").toLowerCase()));
       const bills = all.filter((x: any) => x.kind === "bill" && !["cancelled", "void"].includes(String(x.status || "").toLowerCase()));
       const payments = all.filter((x: any) => x.kind === "payment" && inRange(x));
       const billPayments = all.filter((x: any) => x.kind === "billPayment" && inRange(x));
@@ -787,15 +1025,152 @@ Deno.serve(async (req) => {
       }
       if (reportName === "vendor_balances") {
         const map = new Map<string, any>();
-        for (const x of bills) { const c = contactOf(x) || "—"; const r = map.get(c) || { contact: c, amount: 0 }; r.amount += openBalance(x); map.set(c, r); }
+        for (const x of bills) {
+          const c = contactOf(x) || "—";
+          const r = map.get(c) || { contact: c, amount: 0 };
+          const savedBalance = x.balanceDue ?? x.balance;
+          let balance = savedBalance !== null && savedBalance !== undefined
+            ? Math.max(0, amount(savedBalance))
+            : Math.max(0, amount(x.total ?? x.totalAmount ?? x.grandTotal) - amount(x.paid ?? x.amountPaid));
+          if ((x.total ?? x.totalAmount ?? x.grandTotal) === null || (x.total ?? x.totalAmount ?? x.grandTotal) === undefined) {
+            const items = Array.isArray(x.items) ? x.items : [];
+            const gross = items.reduce((sum: number, item: any) => {
+              const qty = amount(item.qty ?? item.quantity ?? 1);
+              const rate = amount(item.rate ?? item.price ?? item.unitPrice);
+              const itemGross = qty * rate;
+              const discountValue = amount(item.disc ?? item.discount);
+              const discountType = String(item.discType ?? item.discountType ?? "amt").toLowerCase();
+              const discount = ["pct", "percent"].includes(discountType) ? itemGross * discountValue / 100 : discountValue;
+              const taxable = Math.max(0, itemGross - discount);
+              const vatRate = amount(item.vat ?? item.vatRate ?? item.taxRate);
+              return sum + taxable + taxable * vatRate / 100;
+            }, 0);
+            balance = savedBalance !== null && savedBalance !== undefined
+              ? Math.max(0, amount(savedBalance))
+              : Math.max(0, gross - amount(x.paid ?? x.amountPaid));
+          }
+          r.amount += balance;
+          map.set(c, r);
+        }
         const rows = [...map.values()]; return json({ ...base, rows, total: total(rows, (x:any)=>x.amount), note: "Calculated from saved bill balances." });
       }
       if (reportName === "ar_ageing" || reportName === "ap_ageing") {
-        const source = reportName === "ar_ageing" ? invoices : bills;
+        const isReceivables = reportName === "ar_ageing";
+        const source = isReceivables ? invoices : bills;
         const buckets = ["current","d1_30","d31_60","d61_90","d90"];
         const map = new Map<string, any>();
+
+        // Receivables ageing must calculate the balance as of the selected date.
+        // Invoice totals may be stored as total, totalAmount, grandTotal, or line items;
+        // payments are separate records and may not update the invoice's saved balance.
+        const invoiceGrossTotal = (d: any) => {
+          const saved = d.total ?? d.totalAmount ?? d.grandTotal;
+          if (saved !== null && saved !== undefined) return Math.max(0, amount(saved));
+          const items = Array.isArray(d.items) ? d.items : [];
+          let sum = items.reduce((acc: number, item: any) => {
+            const qty = amount(item.qty ?? item.quantity ?? 1);
+            const rate = amount(item.rate ?? item.price ?? item.unitPrice);
+            const gross = qty * rate;
+            const discountValue = amount(item.disc ?? item.discount);
+            const discountType = String(item.discType ?? item.discountType ?? "amt").toLowerCase();
+            const discount = ["pct", "percent"].includes(discountType) ? gross * discountValue / 100 : discountValue;
+            const taxable = Math.max(0, gross - discount);
+            const vatRate = amount(item.vat ?? item.vatRate ?? item.taxRate);
+            return acc + taxable + taxable * vatRate / 100;
+          }, 0);
+          const discount = d.discount;
+          if (discount && typeof discount === "object") {
+            const value = amount(discount.value);
+            const type = String(discount.type ?? "amt").toLowerCase();
+            sum = Math.max(0, sum - (["pct", "percent"].includes(type) ? sum * value / 100 : value));
+          }
+          return Math.max(0, sum);
+        };
+        const invoiceKey = (v: any) => String(v ?? "").trim().toLowerCase();
+        const invoicePayments = new Map<string, number>();
+        if (isReceivables) {
+          for (const payment of all.filter((x: any) => x.kind === "payment" && (!dateOf(x) || dateOf(x) <= to))) {
+            const allocations = Array.isArray(payment.allocations) ? payment.allocations : [];
+            for (const allocation of allocations) {
+              const docId = String(allocation?.docId || allocation?.invoiceId || allocation?.documentId || "");
+              const applied = Math.max(0, amount(allocation?.amount));
+              if (docId && applied > 0) invoicePayments.set(docId, (invoicePayments.get(docId) || 0) + applied);
+            }
+          }
+        }
+        const creditNotes = isReceivables ? docs.filter((x: any) => {
+          const type = String(x.type || "").toLowerCase().replace(/[ _]/g, "-");
+          const status = String(x.status || "").toLowerCase();
+          const issued = dateOf(x);
+          return ["credit-note", "creditnote"].includes(type) &&
+            (!issued || issued <= to) &&
+            !["draft", "cancelled", "canceled", "void", "rejected"].includes(status);
+        }) : [];
+        const creditKeys = (cn: any) => {
+          const linked = cn.invoice ?? cn.linkedInvoice ?? cn.relatedInvoice ?? {};
+          return [
+            cn.invoiceId, cn.invoice_id, cn.linkedInvoiceId, cn.linked_invoice_id,
+            cn.invoiceNumber, cn.invoice_number, cn.linkedInvoiceNumber, cn.linked_invoice_number,
+            cn.againstInvoice, cn.referenceInvoice, cn.reference, cn.ref,
+            typeof linked === "object" ? linked.id : linked,
+            typeof linked === "object" ? linked.number : "",
+            typeof linked === "object" ? linked.docNumber : "",
+          ].map(invoiceKey).filter(Boolean);
+        };
         for (const x of source) {
-          const balance = openBalance(x); if (balance <= 0) continue;
+          // As-of reports should not include invoices/bills dated after the selected date.
+          const issued = String(x.date || x.createdAt || x.created_at || "").slice(0, 10);
+          if (issued && issued > to) continue;
+          let balance = isReceivables
+            ? openBalance(x)
+            : (() => {
+                const savedBalance = x.balanceDue ?? x.balance;
+                if (savedBalance !== null && savedBalance !== undefined) return Math.max(0, amount(savedBalance));
+                const savedTotal = x.total ?? x.totalAmount ?? x.grandTotal;
+                let gross = savedTotal !== null && savedTotal !== undefined ? amount(savedTotal) : 0;
+                if (savedTotal === null || savedTotal === undefined) {
+                  const items = Array.isArray(x.items) ? x.items : [];
+                  gross = items.reduce((sum: number, item: any) => {
+                    const qty = amount(item.qty ?? item.quantity ?? 1);
+                    const rate = amount(item.rate ?? item.price ?? item.unitPrice);
+                    const itemGross = qty * rate;
+                    const discountValue = amount(item.disc ?? item.discount);
+                    const discountType = String(item.discType ?? item.discountType ?? "amt").toLowerCase();
+                    const discount = ["pct", "percent"].includes(discountType) ? itemGross * discountValue / 100 : discountValue;
+                    const taxable = Math.max(0, itemGross - discount);
+                    const vatRate = amount(item.vat ?? item.vatRate ?? item.taxRate);
+                    return sum + taxable + taxable * vatRate / 100;
+                  }, 0);
+                  const discount = x.discount;
+                  if (discount && typeof discount === "object") {
+                    const value = amount(discount.value);
+                    const type = String(discount.type ?? "amt").toLowerCase();
+                    gross = Math.max(0, gross - (["pct", "percent"].includes(type) ? gross * value / 100 : value));
+                  }
+                }
+                return Math.max(0, gross - amount(x.paid ?? x.amountPaid));
+              })();
+          if (isReceivables) {
+            const gross = invoiceGrossTotal(x);
+            const allocated = invoicePayments.get(String(x.id || "")) || 0;
+            const savedPaid = amount(x.paid ?? x.amountPaid);
+            const savedBalance = x.balanceDue ?? x.balance;
+            if (allocated > 0) balance = Math.max(0, gross - Math.max(savedPaid, allocated));
+            else if (savedBalance !== null && savedBalance !== undefined) balance = Math.max(0, amount(savedBalance));
+            else balance = Math.max(0, gross - savedPaid);
+
+            const keys = new Set([x.id, x.number, x.docNumber].map(invoiceKey).filter(Boolean));
+            const credit = creditNotes.reduce((sum: number, cn: any) => {
+              const linkedKeys = creditKeys(cn);
+              const sameInvoice = linkedKeys.some((key: string) => keys.has(key));
+              const sameCustomer = String(cn.party?.name || cn.contact || "").trim().toLowerCase() ===
+                String(x.party?.name || x.contact || "").trim().toLowerCase();
+              const sameCurrency = String(cn.currency || "AED").toUpperCase() === String(x.currency || "AED").toUpperCase();
+              return sameInvoice && sameCustomer && sameCurrency ? sum + invoiceGrossTotal(cn) : sum;
+            }, 0);
+            balance = Math.max(0, balance - credit);
+          }
+          if (balance <= 0.005) continue;
           const due = String(x.due || x.dueDate || x.date || to).slice(0,10);
           const days = Math.max(0, Math.floor((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${due}T00:00:00Z`))/86400000));
           const bucket = days <= 0 ? "current" : days <= 30 ? "d1_30" : days <= 60 ? "d31_60" : days <= 90 ? "d61_90" : "d90";
@@ -859,21 +1234,7 @@ Deno.serve(async (req) => {
           };
         };
 
-       // const incomeRows = payments.map((x: any) => detailRow(x, "Customer payment"));
-        const incomeRows = payments.map((x: any) =>
-          detailRow(
-            {
-              ...x,
-              description:
-                x.customerName ||
-                x.contactName ||
-                x.contact ||
-                x.party?.name ||
-                x.description,
-            },
-            "Customer payment"
-          )
-        );
+        const incomeRows = payments.map((x: any) => detailRow(x, "Customer payment"));
         const expenseRows = [
           ...billPayments.map((x: any) => detailRow(x, "Supplier bill payment")),
           ...expenses.map((x: any) => detailRow(x, "Expense")),
