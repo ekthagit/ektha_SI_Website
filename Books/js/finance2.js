@@ -4,6 +4,25 @@ Object.assign(Finance, {
     /* ==========================================================
        BILLS AND VENDOR CREDITS
        ========================================================== */
+    // Derive the outstanding bill balance from both the bill's saved paid
+    // field and saved bill-payment allocations. Use the larger paid value,
+    // not their sum, so a payment is never deducted twice when both places
+    // already contain it.
+    billBalance(b) {
+        if (!b) return 0;
+        const total = num(this.billTotal(b));
+        const savedPaid = Math.max(0, num(b.paid ?? b.amountPaid));
+        const allocatedPaid = (Server.fin.billPayment || []).reduce((sum, payment) => {
+            const allocations = Array.isArray(payment.allocations) ? payment.allocations : [];
+            const applied = allocations
+                .filter(a => String(a.billId || a.bill_id || "") === String(b.id))
+                .reduce((s, a) => s + Math.max(0, num(a.amount)), 0);
+            return sum + applied;
+        }, 0);
+        const paid = Math.max(savedPaid, allocatedPaid);
+        const credited = Math.max(0, num(b.credited));
+        return Math.max(0, round(total - paid - credited, 2));
+    },
     billStatus(b) {
         if (b.status === "void") return "cancelled";
         const bal = this.billBalance(b);
@@ -286,7 +305,7 @@ ${this.field("Notes", `<textarea name="notes" rows="2">${esc(p.notes || "")}</te
                 { label: "Category", html: e => esc(this.accountName(e.accountId)) },
                 { label: "Vendor / description", html: e => `${esc(e.vendorName || "")}${e.description ? `<div class="small muted">${esc(e.description)}</div>` : ""}`, cls: "who" },
                 { label: "Paid through", html: e => esc(this.accountName(e.paidThrough)) },
-                { label: "Receipt", html: e => (e.attachments || []).length ? `<a href="${esc(e.attachments[0].url)}" target="_blank" rel="noopener" title="${esc(e.attachments[0].name)}">${icon("file", 14)}</a>` : '<span class="muted">—</span>' },
+                { label: "Receipt", html: e => `${e.reference ? `<span>${esc(e.reference)}</span>` : ""}${(e.attachments || []).length ? `${e.reference ? " " : ""}<a href="${esc(e.attachments[0].url)}" target="_blank" rel="noopener" title="${esc(e.attachments[0].name)}">${icon("file", 14)}</a>` : ""}` || '<span class="muted">—</span>' },
                 { label: "Amount", num: true, html: e => this.money(this.expenseTotal(e), e.currency) }
             ], rows, { empty: "No expenses yet. Snap a photo of a receipt and record it here.", onRow: e => e.id });
         this.bindRows("#finance/expense/");

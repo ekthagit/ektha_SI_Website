@@ -19,7 +19,9 @@
         LS_CRON = "evambooks.browser.cron", LS_MODE = "evambooks.browser.storage";
     const API = "https://books.local/DocumentDesk/api/";
 
-    let E = null, dirty = false, paused = false, storage = "indexeddb";
+    let E = null, SQL_ENGINE = null, dirty = false, paused = false, storage = "indexeddb";
+    let syncChannel = null;
+    const TAB_ID = Math.random().toString(36).slice(2);
 
     /* ---------- Bytes ⇄ base64 ---------- */
     function b64ToBytes(s) { const bin = atob(s); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
@@ -87,7 +89,21 @@
     }
 
     /* ---------- One call into the engine ---------- */
-    async function call(method, path, headers, body) {
+    async function refreshEngineFromStorage() {
+        // Each tab has its own in-memory SQLite connection. Reload the latest
+        // committed database snapshot before a write so tabs don't overwrite
+        // each other's newer data with an old copy.
+        if (!SQL_ENGINE || dirty) return false;
+        const bytes = await loadBytes();
+        if (!bytes) return false;
+        E = EVAMEngine.createEngine(SQL_ENGINE, bytes, {
+            onWrite: () => { dirty = true; },
+            vars: { SETUP_CODE: DEMO.setupCode }
+        });
+        return true;
+    }
+
+    async function callUnlocked(method, path, headers, body) {
         let b = body;
         if (b instanceof Blob) b = await b.arrayBuffer();
         const h = {};
@@ -96,14 +112,30 @@
         if (c) h.cookie = c;
         if (b instanceof ArrayBuffer) h["content-length"] = String(b.byteLength);
         else if (typeof b === "string") h["content-length"] = String(new TextEncoder().encode(b).length);
-        if (paused && method !== "GET") return new Response(JSON.stringify({ error: "EVAM Books is open in another tab. Use that tab, or reload this one." }), { status: 409, headers: { "content-type": "application/json" } });
+
         const res = await E.fetch(API + path, { method, headers: h, body: b });
         setCookieFrom(res.headers.get("set-cookie"));
         const out = await res.arrayBuffer();
-        if (dirty) await flush();
+        if (dirty) {
+            await flush();
+            try { syncChannel?.postMessage({ type: "database-changed", from: TAB_ID, at: Date.now() }); } catch {}
+        }
         const hh = {};
         res.headers.forEach((v, k) => { if (k !== "set-cookie") hh[k] = v; });
         return new Response([101, 204, 205, 304].includes(res.status) ? null : out, { status: res.status, headers: hh });
+    }
+
+    async function call(method, path, headers, body) {
+        const run = async () => {
+            // The Web Lock serializes writes across tabs. Rebase this tab's
+            // SQLite copy on the latest committed snapshot before each write.
+            if (method !== "GET") await refreshEngineFromStorage();
+            return callUnlocked(method, path, headers, body);
+        };
+        if (method !== "GET" && navigator.locks && typeof navigator.locks.request === "function") {
+            return navigator.locks.request("evam-books-browser-database-write", run);
+        }
+        return run();
     }
     async function api(method, path, body) {
         const r = await call(method, path, { "content-type": "application/json", "x-evam": "1" }, body === undefined ? undefined : JSON.stringify(body));
@@ -246,9 +278,9 @@
     const ready = (async () => {
         if (!document.body) await new Promise(r => document.addEventListener("DOMContentLoaded", r, { once: true }));
         splash("Opening EVAM Books…");
-        const SQL = await initSqlJs({ wasmBinary: b64ToBytes(window.EVAM_SQL_WASM) });
+        SQL_ENGINE = await initSqlJs({ wasmBinary: b64ToBytes(window.EVAM_SQL_WASM) });
         const bytes = await loadBytes();
-        E = EVAMEngine.createEngine(SQL, bytes, { onWrite: () => { dirty = true; }, vars: { SETUP_CODE: DEMO.setupCode } });
+        E = EVAMEngine.createEngine(SQL_ENGINE, bytes, { onWrite: () => { dirty = true; }, vars: { SETUP_CODE: DEMO.setupCode } });
         if (E.fresh) {
             let empty = false;
             try { empty = localStorage.getItem(LS_EMPTY) === "1"; localStorage.removeItem(LS_EMPTY); } catch { /* ignore */ }
@@ -409,17 +441,30 @@
         right.prepend(chip);
     };
 
-    /* ---------- One tab at a time (each tab holds its own copy in memory) ---------- */
+    /* ---------- Multi-tab support and cross-tab database sync ---------- */
     try {
-        const ch = new BroadcastChannel("evam-books-browser");
-        const me = Math.random().toString(36).slice(2);
-        ch.onmessage = ev => {
-            if (!ev.data || ev.data.from === me || ev.data.hello !== true || paused) return;
-            paused = true;
-            document.body.insertAdjacentHTML("beforeend", `<div id="browserSplash"><div class="bs-card"><img src="logo.svg" alt="EVAM"><h2>Open in another tab</h2><p>EVAM Books was opened in another tab or window. To keep your data safe, work there — or reload this tab to continue here.</p><button type="button" class="btn btn-primary" onclick="location.reload()">Use this tab</button></div></div>`);
+        syncChannel = new BroadcastChannel("evam-books-browser");
+        syncChannel.onmessage = async ev => {
+            const msg = ev.data;
+            if (!msg || msg.from === TAB_ID || msg.type !== "database-changed" || paused) return;
+            // Don't replace a local database while it has uncommitted writes.
+            // The next write will rebase from IndexedDB under the shared lock.
+            if (!dirty) {
+                try {
+                    const changed = await refreshEngineFromStorage();
+                    if (changed) window.dispatchEvent(new CustomEvent("evambooks:database-updated", { detail: { at: msg.at } }));
+                } catch (err) { console.warn("EVAM Books cross-tab refresh", err); }
+            }
         };
-        ready.then(() => ch.postMessage({ hello: true, from: me }));
-    } catch { /* older browsers: no guard */ }
+        document.addEventListener("visibilitychange", async () => {
+            if (document.visibilityState === "visible" && !dirty) {
+                try {
+                    const changed = await refreshEngineFromStorage();
+                    if (changed) window.dispatchEvent(new CustomEvent("evambooks:database-updated", { detail: { at: Date.now() } }));
+                } catch (err) { console.warn("EVAM Books tab refresh", err); }
+            }
+        });
+    } catch { /* BroadcastChannel is optional; writes still work in this tab. */ }
 
     /* ---------- Styles for the bits above ---------- */
     const css = document.createElement("style");

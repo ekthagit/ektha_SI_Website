@@ -831,9 +831,62 @@ Deno.serve(async (req) => {
         // the selected period; expenses are recorded expenses plus supplier
         // bill payments actually made during that period. Invoice totals,
         // outstanding receivables, and unpaid bills are excluded.
+        // Keep the existing total calculations unchanged; also return the
+        // contributing records so the report's info popovers can list them.
         const income = total(payments, (x: any) => amount(x.amount ?? x.total));
         const costs = total([...billPayments, ...expenses], (x: any) => amount(x.amount ?? x.total));
-        return json({...base,sections:[{label:"Income",rows:[],total:income},{label:"Expenses",rows:[],total:costs},{label:"Net profit",total:income-costs,final:true}]});
+
+        const detailRow = (x: any, fallbackLabel: string) => {
+          const label = String(
+            x.description || x.memo || x.category || x.accountName ||
+            x.contact || x.party?.name || x.customerName || x.vendorName ||
+            x.number || x.docNumber || fallbackLabel
+          );
+          return {
+            id: x.id || x.number || x.docNumber || "",
+            number: x.number || x.docNumber || x.reference || x.id || "",
+            date: dateOf(x),
+            // Supply both keys because the report UI versions use different
+            // display fields. This changes labels only, not report totals.
+            label,
+            name: label,
+            description: label,
+            contact: contactOf(x) || "",
+            amount: amount(x.amount ?? x.total),
+            currency: x.currency || "AED",
+            account: x.accountName || x.account || "",
+            reference: x.reference || "",
+          };
+        };
+
+       // const incomeRows = payments.map((x: any) => detailRow(x, "Customer payment"));
+        const incomeRows = payments.map((x: any) =>
+          detailRow(
+            {
+              ...x,
+              description:
+                x.customerName ||
+                x.contactName ||
+                x.contact ||
+                x.party?.name ||
+                x.description,
+            },
+            "Customer payment"
+          )
+        );
+        const expenseRows = [
+          ...billPayments.map((x: any) => detailRow(x, "Supplier bill payment")),
+          ...expenses.map((x: any) => detailRow(x, "Expense")),
+        ];
+
+        return json({
+          ...base,
+          sections: [
+            { label: "Income", rows: incomeRows, total: income },
+            { label: "Expenses", rows: expenseRows, total: costs },
+            { label: "Net profit", total: income - costs, final: true },
+          ],
+        });
       }
       if (reportName === "balance_sheet") return json({...base,sections:[{label:"Assets",rows:[],total:0},{label:"Liabilities",rows:[],total:0},{label:"Equity",rows:[],total:0,final:true}],balanced:true});
     }

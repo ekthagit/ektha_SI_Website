@@ -297,8 +297,15 @@ const Server = {
             .single();
         if (error) throw error;
         this.versions.set(recordKey, data.updated_at);
+
+        // Update the shared in-memory store immediately after any successful save.
+        // This keeps all subscribed pages (Bills, Payments Made, Expenses, Accounts,
+        // and other finance screens) in sync without a manual browser refresh.
+        const savedObject = { ...body, id: recordKey, kind };
+        this.apply(savedObject);
         this.saveCache();
-        return { object: { ...body, id: recordKey, kind } };
+        this.emit();
+        return { object: savedObject };
     },
     async remove(kind, id) {
         const supabase = await this.getSupabase();
@@ -358,10 +365,21 @@ const Server = {
         }
     },
 
-    /* Other people's changes, every 30 seconds and when the tab comes back */
+    /* Refresh records changed in another tab/device every 30 seconds and
+       whenever this tab becomes visible again. Do not overwrite pending local
+       edits while the save queue is active. */
     async poll() {
-        // Legacy polling endpoint is not used with Supabase.
-        return;
+        if (!this.online || this._pollingNow || this.busy || this.queue.length) return;
+        this._pollingNow = true;
+        try {
+            await this.loadAll();
+            this.lastSync = Date.now();
+            this.saveCache();
+        } catch (error) {
+            console.warn("EVAM Books background refresh failed:", error);
+        } finally {
+            this._pollingNow = false;
+        }
     },
 
     /* Settings: pushed when they change */
