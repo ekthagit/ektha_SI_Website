@@ -396,7 +396,7 @@ const Finance = {
   <section class="card bento-6 fin-card exp-card">
     <header class="card-head"><div><h2>Expenses this month</h2><p class="card-sub">By category · ${C}</p></div></header>
     ${cats.length ? `<div class="exp-body"><div id="dashDonut" class="donut-host"></div>
-    <ul class="cat-list">${cats.map(x => `<li><i class="cat-dot" style="background:${x.color}"></i>${x.other ? `<span class="muted">${esc(x.name)}</span>` : `<a href="${x.id ? `#finance/report/general_ledger?account=${encodeURIComponent(x.id)}&from=${monthStart}&to=${d.today}` : `#finance/report/expense_list?from=${monthStart}&to=${d.today}`}">${esc(x.name)}</a>`}<span class="num">${fmt(v(x.amount), C)}</span><span class="cat-bar"><i style="width:${Math.max(2, Math.round(x.amount / catTotal * 100))}%;background:${x.color}"></i></span></li>`).join("")}</ul></div>`
+    <ul class="cat-list">${cats.map(x => { const category = x.other ? x.name : x.name; const href = `#finance/report/expense_list?category=${encodeURIComponent(category)}&from=${monthStart}&to=${d.today}`; return `<li><i class="cat-dot" style="background:${x.color}"></i><a href="${href}">${esc(x.name)}</a><span class="num">${fmt(v(x.amount), C)}</span><span class="cat-bar"><i style="width:${Math.max(2, Math.round(x.amount / catTotal * 100))}%;background:${x.color}"></i></span></li>`; }).join("")}</ul></div>`
         : `<div class="empty empty-sm"><div class="empty-art">${icon("wallet", 24)}</div><p>No expenses recorded this month.</p>${this.link("Add an expense", "#finance/expense/new", "btn-ghost btn-sm")}</div>`}
     <div class="card-foot"><a href="#finance/expenses">All expenses</a><a href="#finance/report/expenses_by_category">Expenses by category ${icon("arrowRight", 14)}</a></div>
   </section>

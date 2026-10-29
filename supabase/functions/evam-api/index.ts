@@ -933,11 +933,39 @@ Deno.serve(async (req) => {
       const monthExpenses = expensesRows.filter((e: any) => String(e.date || "").slice(0, 10) >= monthStart && String(e.date || "").slice(0, 10) <= today);
       const lastMonthStart = shiftMonth(today, -1);
       const expenseThisMonthTotal = monthExpenses.reduce((s: number, e: any) => s + amount(e.amount ?? e.total), 0);
+      // Resolve expense account IDs to chart-of-accounts labels for the dashboard
+      // category breakdown. Keep expenses without an account under "Uncategorised".
+      const dashboardAccountNames = new Map<string, string>();
+      for (const accountRow of accounts) {
+        const accountId = String(accountRow.id || accountRow.accountId || "");
+        const accountData = asObject(accountRow.data);
+        const name = String(accountRow.name || accountRow.accountName || accountData.name || accountData.accountName || accountData.label || accountData.title || "").trim();
+        const number = String(accountRow.number || accountData.number || accountData.code || accountData.accountNumber || "").trim();
+        const label = name && number ? `${number} · ${name}` : (name || number);
+        if (accountId && label) dashboardAccountNames.set(accountId, label);
+      }
+      const dashboardExpenseAccountIds = [...new Set(monthExpenses
+        .map((e: any) => String(e.accountId || ""))
+        .filter((id: string) => id && !dashboardAccountNames.has(id)))];
+      if (dashboardExpenseAccountIds.length) {
+        const { data: dashboardAccountRows } = await supabase.from("objects")
+          .select("id,number,data,deleted")
+          .in("id", dashboardExpenseAccountIds);
+        for (const accountRow of dashboardAccountRows || []) {
+          if (accountRow.deleted === true) continue;
+          const accountData = asObject(accountRow.data);
+          const name = String(accountData.name || accountData.accountName || accountData.label || accountData.title || "").trim();
+          const number = String(accountRow.number || accountData.number || accountData.code || accountData.accountNumber || "").trim();
+          const label = name && number ? `${number} · ${name}` : (name || number);
+          if (label) dashboardAccountNames.set(String(accountRow.id), label);
+        }
+      }
       // Build the category breakdown from the same month-filtered expense records
       // used by the dashboard KPI, so the card and the total stay in sync.
       const expenseCategoryTotals = new Map<string, number>();
       for (const e of monthExpenses) {
-        const category = String(e.category || e.accountName || e.account || "Uncategorised");
+        const accountId = String(e.accountId || "");
+        const category = String(e.category || e.accountName || dashboardAccountNames.get(accountId) || e.account || "Uncategorised");
         expenseCategoryTotals.set(category, (expenseCategoryTotals.get(category) || 0) + amount(e.amount ?? e.total));
       }
       const sortedExpenseCategories = [...expenseCategoryTotals.entries()]
@@ -1004,6 +1032,52 @@ Deno.serve(async (req) => {
       const contactOf = (x: any) => String(x.contact || x.party?.name || x.customerName || x.vendorName || "");
       const total = (xs: any[], fn = (x: any) => amount(x.total ?? x.amount)) => xs.reduce((s, x) => s + fn(x), 0);
       const docRows = (xs: any[]) => xs.filter(inRange).map((x: any) => ({ id: x.id, number: x.number || x.docNumber || x.id, date: dateOf(x), contact: contactOf(x), amount: amount(x.total ?? x.amount), currency: x.currency || "AED", account: x.accountName || x.account || "", reference: x.reference || "" }));
+
+      // Resolve the selected expense Category/account ID to its chart-of-accounts label.
+      // This only changes the Account column in the Expense list report.
+      const expenseAccountIds = [...new Set(expenses.map((x: any) => String(x.accountId || "")).filter(Boolean))];
+      const expenseAccountNames = new Map<string, string>();
+      if (expenseAccountIds.length) {
+        const { data: accountRows } = await supabase.from("objects")
+          .select("id,number,data,deleted")
+          .in("id", expenseAccountIds);
+        for (const row of accountRows || []) {
+          if (row.deleted === true) continue;
+          const account = asObject(row.data);
+          const name = String(account.name || account.accountName || account.label || account.title || "").trim();
+          const number = String(row.number || account.number || account.code || account.accountNumber || "").trim();
+          const label = name && number ? `${number} · ${name}` : (name || number);
+          if (label) expenseAccountNames.set(String(row.id), label);
+        }
+        const unresolvedIds = expenseAccountIds.filter((id) => !expenseAccountNames.has(id));
+        if (unresolvedIds.length) {
+          const { data: savedAccounts } = await supabase.from("books_records")
+            .select("record_type,record_key,data")
+            .eq("user_id", user.id)
+            .in("record_key", unresolvedIds);
+          for (const row of savedAccounts || []) {
+            if (!["account", "chartAccount", "chart_account", "category"].includes(String(row.record_type || ""))) continue;
+            const account = asObject(row.data);
+            const name = String(account.name || account.accountName || account.label || account.title || "").trim();
+            const number = String(account.number || account.code || account.accountNumber || "").trim();
+            const label = name && number ? `${number} · ${name}` : (name || number);
+            if (label) expenseAccountNames.set(String(row.record_key), label);
+          }
+        }
+      }
+      const expenseListRows = () => expenses.filter(inRange).map((x: any) => {
+        const accountId = String(x.accountId || "");
+        return {
+          id: x.id,
+          number: x.number || x.docNumber || x.id,
+          date: dateOf(x),
+          contact: contactOf(x),
+          amount: amount(x.total ?? x.amount),
+          currency: x.currency || "AED",
+          account: expenseAccountNames.get(accountId) || x.accountName || x.categoryName || x.account || "",
+          reference: x.reference || "",
+        };
+      });
       const titleMap: Record<string,string> = {
         profit_loss:"Profit and loss", balance_sheet:"Balance sheet", cash_flow:"Cash flow",
         ar_ageing:"Receivables ageing", ap_ageing:"Payables ageing", customer_statement:"Customer statement",
@@ -1017,7 +1091,7 @@ Deno.serve(async (req) => {
       const base = { title, from, to, asOf: ["balance_sheet","trial_balance","ar_ageing","ap_ageing","vendor_balances"].includes(reportName) ? to : undefined };
       if (reportName === "payments_received") return json({ ...base, rows: docRows(payments), total: total(payments) });
       if (reportName === "payments_made") return json({ ...base, rows: docRows(billPayments), total: total(billPayments) });
-      if (reportName === "expense_list") return json({ ...base, rows: docRows(expenses), total: total(expenses) });
+      if (reportName === "expense_list") return json({ ...base, rows: expenseListRows(), total: total(expenses) });
       if (reportName === "sales_by_customer") {
         const map = new Map<string, any>();
         for (const x of invoices.filter(inRange)) { const c = contactOf(x) || "—"; const r = map.get(c) || { contact: c, documents: 0, amount: 0 }; r.documents++; r.amount += amount(x.total); map.set(c, r); }

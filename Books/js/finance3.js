@@ -433,6 +433,7 @@ ${canEdit ? "" : this.readonly()}
 <form class="report-filters" id="repForm">
   ${pointInTime ? this.field("As of", this.input("to", to, 'type="date"')) : this.field("From", this.input("from", from, 'type="date"')) + this.field("To", this.input("to", to, 'type="date"'))}
   ${extra}
+  ${name === "expense_list" && p.get("category") ? `<input type="hidden" name="category" value="${esc(p.get("category"))}">` : ""}
   <button type="submit" class="btn btn-quiet">Run report</button>
   ${presets}
 </form></div>
@@ -451,6 +452,18 @@ ${canEdit ? "" : this.readonly()}
         let d;
         try { d = await Server.get(`reports/${name}?${q}`); } catch (e) { $("#repOut").innerHTML = `<p class="bad-text">${esc(e.message)}</p>`; return; }
         if (!this.sub.startsWith("report/" + name)) return;
+        // Dashboard category links open this report with a category filter.
+        // Filter only the displayed rows; leave the server's existing calculations untouched.
+        const selectedCategory = name === "expense_list" ? (p.get("category") || "") : "";
+        if (selectedCategory) {
+            const norm = value => String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+            const isUncategorised = /^(uncategorised|uncategorized)$/.test(norm(selectedCategory));
+            d.rows = (d.rows || []).filter(r => {
+                const account = norm(r.account);
+                return isUncategorised ? !account : account.includes(norm(selectedCategory));
+            });
+            d.title = `${d.title || "Expense list"} — ${selectedCategory}`;
+        }
         $("#repOut").innerHTML = this.renderReport(name, d);
         $$("#repOut [data-src]").forEach(a => a.addEventListener("click", e => { e.preventDefault(); this.openSource(a.dataset.src, a.dataset.kind); }));
     },
