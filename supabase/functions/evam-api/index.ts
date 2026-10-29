@@ -1234,7 +1234,20 @@ Deno.serve(async (req) => {
           };
         };
 
-        const incomeRows = payments.map((x: any) => detailRow(x, "Customer payment"));
+        const incomeRows = payments.map((x: any) =>
+          detailRow(
+            {
+              ...x,
+              description:
+                x.customerName ||
+                x.contactName ||
+                x.contact ||
+                x.party?.name ||
+                x.description,
+            },
+            "Customer payment"
+          )
+        );
         const expenseRows = [
           ...billPayments.map((x: any) => detailRow(x, "Supplier bill payment")),
           ...expenses.map((x: any) => detailRow(x, "Expense")),
