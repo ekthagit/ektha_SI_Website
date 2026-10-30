@@ -167,6 +167,7 @@ const Server = {
             this.role = { read: "*", write: "*", reports: "*" };
 
             await this.loadAll();
+            this.startRealtime(supabase);
             await Auth.gateChecks();
 
             supabase.auth.onAuthStateChange((event, currentSession) => {
@@ -365,9 +366,34 @@ const Server = {
         }
     },
 
-    /* Refresh records changed in another tab/device every 30 seconds and
-       whenever this tab becomes visible again. Do not overwrite pending local
-       edits while the save queue is active. */
+    /* Listen for shared-record changes made in another session/device.
+       A short debounce groups bursts of database events into one fresh load. */
+    startRealtime(supabase) {
+        if (!supabase || !this.user?.id || this._realtimeChannel) return;
+        try {
+            this._realtimeChannel = supabase
+                .channel(`books-records-${this.user.id}`)
+                .on("postgres_changes", {
+                    event: "*",
+                    schema: "public",
+                    table: "books_records",
+                    filter: `user_id=eq.${this.user.id}`
+                }, () => {
+                    clearTimeout(this._realtimeRefreshTimer);
+                    this._realtimeRefreshTimer = setTimeout(() => this.poll(), 300);
+                })
+                .subscribe(status => {
+                    if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+                        console.warn("EVAM Books realtime subscription:", status);
+                    }
+                });
+        } catch (error) {
+            console.warn("EVAM Books realtime setup failed:", error);
+        }
+    },
+
+    /* Fetch the latest shared records when needed. Skip while local saves
+       are pending so a refresh cannot overwrite unsaved changes. */
     async poll() {
         if (!this.online || this._pollingNow || this.busy || this.queue.length) return;
         this._pollingNow = true;

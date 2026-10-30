@@ -236,6 +236,13 @@ function route() {
         fitZoom();
     }
     if (view !== "finance" && !ext) document.title = view === "create" ? `${T().short} ${App.doc.number || ""} · ${APP_TITLE()}` : `${view[0].toUpperCase() + view.slice(1)} · ${APP_TITLE()}`;
+    // Fetch the latest shared records when the user navigates to another section.
+    // Startup already performs loadAll(), so this runs only on later navigation.
+    if (Server.online) {
+        const routeKey = location.hash || "#create";
+        if (App._lastRouteKey && App._lastRouteKey !== routeKey) Server.poll();
+        App._lastRouteKey = routeKey;
+    }
     Shell.onRoute(view);
 }
 
